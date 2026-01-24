@@ -1,7 +1,7 @@
 # vision_module/camera_driver.py
 from Mv3dRgbdImport.Mv3dRgbdDefine import *
 from Mv3dRgbdImport.Mv3dRgbdApi import *
-from Mv3dRgbdImport.Mv3dRgbdDefine import CoordinateType_RGB
+from Mv3dRgbdImport.Mv3dRgbdDefine import CoordinateType_RGB, DeviceType_Ethernet
 
 import numpy as np
 import cv2

@@ -2,7 +2,9 @@ from dataclasses import dataclass, field
 import numpy as np
 from datetime import datetime
 from typing import List, Tuple, Optional, Dict, Literal
+from .region_manager import RegionManager, ValidSceneStatus
 
+from vision_module.region_manager import RegionManager, ValidSceneStatus
 """
 this is for 相机驱动
 图像帧数据结构
