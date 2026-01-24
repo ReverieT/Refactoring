@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>区域标定 Web 版</title>
+    <script src="https://unpkg.com/konva@9/konva.min.js"></script>
+    <style>
+        :root {
+            --sidebar-width: 300px;
+            --primary-color: #007bff;
+            --secondary-color: #6c757d;
+            --bg-color: #f8f9fa;
+            --text-color: #333;
+        }
+        body { margin: 0; display: flex; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; height: 100vh; overflow: hidden; color: var(--text-color); }
+        
+        #sidebar {
+            width: var(--sidebar-width);
+            background: white;
+            padding: 20px;
+            box-shadow: 2px 0 5px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+            z-index: 10;
+            overflow-y: auto;
+        }
+
+        #container {
+            flex-grow: 1;
+            background: #e9ecef;
+            overflow: auto;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+        }
+
+        h3 { margin-top: 0; color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+        
+        .btn {
+            display: block;
+            width: 100%;
+            padding: 12px;
+            margin: 10px 0;
+            cursor: pointer;
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+            transition: background-color 0.2s;
+        }
+        .btn:hover { background-color: #0056b3; }
+        
+        .info-box {
+            background: #f1f3f5;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        .region-item {
+            padding: 10px;
+            border: 1px solid #ddd;
+            margin-bottom: 5px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .region-item:hover { background-color: #f8f9fa; }
+        .region-item.active { border-color: var(--primary-color); background-color: #e7f1ff; }
+
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 20px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+
+<div id="sidebar">
+    <h3>区域标定工具</h3>
+    
+    <div class="info-box">
+        <strong>操作说明：</strong>
+        <ol style="padding-left: 20px; margin: 5px 0;">
+            <li><strong>拖拽红点</strong>：调整多边形顶点位置。</li>
+            <li><strong>绿色区域</strong>：基础区域（Base Region）。</li>
+            <li><strong>蓝色区域</strong>：边缘区域（Edge Region）。</li>
+            <li><strong>红色区域</strong>：其他子区域。</li>
+            <li>修改完成后，点击下方<strong>“保存配置”</strong>按钮。</li>
+        </ol>
+    </div>
+
+    <button class="btn" onclick="saveToServer()">💾 保存配置到 YAML</button>
+    
+    <h3>区域列表</h3>
+    <div id="regionList"></div>
+</div>
+
+<div id="container"></div>
+<div class="loading" id="loading">正在加载图片和配置...</div>
+
+<script>
+    const CONFIG_RES = { width: 1408, height: 1024 }; // 原始分辨率
+    const VIEW_WIDTH = 1024; // 网页显示宽度
+    const SCALE = VIEW_WIDTH / CONFIG_RES.width;
+
+    const stage = new Konva.Stage({
+        container: 'container',
+        width: VIEW_WIDTH,
+        height: CONFIG_RES.height * SCALE
+    });
+
+    const layer = new Konva.Layer();
+    stage.add(layer);
+
+    let configData = { base_regions: [] };
+
+    // 1. 加载背景图
+    const bgImage = new Image();
+    bgImage.onload = function() {
+        const konvaImg = new Konva.Image({
+            image: bgImage,
+            width: stage.width(),
+            height: stage.height(),
+        });
+        layer.add(konvaImg);
+        konvaImg.moveToBottom();
+        document.getElementById('loading').style.display = 'none';
+        loadConfig(); // 图片加载完后再加载配置
+    };
+    bgImage.onerror = function() {
+        document.getElementById('loading').innerText = "❌ 无法加载背景图片 (camera_background.png)";
+    };
+    bgImage.src = '/camera_background.png'; // 使用根路径
+
+    // 2. 获取配置
+    async function loadConfig() {
+        try {
+            const res = await fetch('/config');
+            configData = await res.json();
+            renderRegions();
+            renderRegionList();
+        } catch (e) {
+            console.error("加载配置失败", e);
+            alert("加载配置失败，请检查后端服务");
+        }
+    }
+
+    // 3. 渲染区域
+    function renderRegions() {
+        // 清除旧图形（保留背景图除外）
+        layer.getChildren(node => node.getClassName() !== 'Image').forEach(n => n.destroy());
+
+        configData.base_regions.forEach((region, rIdx) => {
+            // 绘制基础区域
+            drawPolygon(region.polygon_vertices, 'green', `Base: ${region.name}`, (newPoints) => {
+                configData.base_regions[rIdx].polygon_vertices = newPoints;
+            });
+            
+            // 绘制子区域
+            region.sub_regions.forEach((sub, sIdx) => {
+                const color = sub.type === 'edge' ? 'blue' : 'red';
+                drawPolygon(sub.polygon_vertices, color, `Sub: ${sub.name}`, (newPoints) => {
+                    configData.base_regions[rIdx].sub_regions[sIdx].polygon_vertices = newPoints;
+                });
+            });
+        });
+    }
+
+    // 4. 绘制可交互多边形函数
+    function drawPolygon(vertices, color, tooltipText, onUpdate) {
+        if (!vertices || vertices.length === 0) return;
+
+        const points = vertices.flatMap(v => [v[0] * SCALE, v[1] * SCALE]);
+        
+        const group = new Konva.Group();
+        layer.add(group);
+
+        const poly = new Konva.Line({
+            points: points,
+            stroke: color,
+            strokeWidth: 2,
+            closed: true,
+            fill: color === 'green' ? 'rgba(0,255,0,0.1)' : (color === 'blue' ? 'rgba(0,0,255,0.1)' : 'rgba(255,0,0,0.1)'),
+        });
+        group.add(poly);
+
+        // 添加文本标签
+        const text = new Konva.Text({
+            x: points[0],
+            y: points[1] - 20,
+            text: tooltipText,
+            fontSize: 14,
+            fill: color,
+            fontStyle: 'bold'
+        });
+        group.add(text);
+
+        // 为每个顶点创建手柄
+        const anchors = [];
+        for (let i = 0; i < points.length / 2; i++) {
+            const circle = new Konva.Circle({
+                x: points[i * 2],
+                y: points[i * 2 + 1],
+                radius: 6,
+                fill: color,
+                stroke: 'white',
+                strokeWidth: 2,
+                draggable: true,
+                hitStrokeWidth: 10 // 增加点击区域
+            });
+
+            circle.on('mouseover', function() {
+                document.body.style.cursor = 'pointer';
+                this.scale({x: 1.5, y: 1.5});
+            });
+            
+            circle.on('mouseout', function() {
+                document.body.style.cursor = 'default';
+                this.scale({x: 1, y: 1});
+            });
+
+            circle.on('dragmove', () => {
+                const p = poly.points();
+                p[i * 2] = circle.x();
+                p[i * 2 + 1] = circle.y();
+                poly.points(p);
+                
+                // 更新文本位置
+                if(i === 0) {
+                    text.x(circle.x());
+                    text.y(circle.y() - 20);
+                }
+
+                // 将缩放后的坐标还原并传回数据源
+                const updatedVertices = [];
+                for(let j=0; j<p.length; j+=2) {
+                    updatedVertices.push([Math.round(p[j]/SCALE), Math.round(p[j+1]/SCALE)]);
+                }
+                onUpdate(updatedVertices);
+            });
+            group.add(circle);
+            anchors.push(circle);
+        }
+    }
+
+    // 渲染左侧区域列表
+    function renderRegionList() {
+        const listDiv = document.getElementById('regionList');
+        listDiv.innerHTML = '';
+        
+        configData.base_regions.forEach((region, rIdx) => {
+            const container = document.createElement('div');
+            container.className = 'region-container';
+            container.style.marginBottom = '15px';
+            container.style.border = '1px solid #ddd';
+            container.style.borderRadius = '5px';
+            container.style.background = 'white';
+
+            // Base Region Header
+            const header = document.createElement('div');
+            header.style.padding = '10px';
+            header.style.backgroundColor = '#f8f9fa';
+            header.style.borderBottom = '1px solid #eee';
+            header.innerHTML = `<strong>${region.name}</strong> <span style="color:#666;font-size:0.8em">(${region.region_id})</span>`;
+            container.appendChild(header);
+
+            // Sub-regions List
+            const subList = document.createElement('div');
+            subList.style.padding = '10px';
+            
+            if (!region.sub_regions || region.sub_regions.length === 0) {
+                subList.innerHTML = '<div style="color:#999;font-style:italic;font-size:0.9em">无子区域</div>';
+            } else {
+                region.sub_regions.forEach((sub, sIdx) => {
+                    const subItem = document.createElement('div');
+                    subItem.style.display = 'flex';
+                    subItem.style.justifyContent = 'space-between';
+                    subItem.style.alignItems = 'center';
+                    subItem.style.marginBottom = '5px';
+                    subItem.style.fontSize = '14px';
+                    subItem.style.padding = '5px';
+                    subItem.style.backgroundColor = '#fff';
+                    subItem.style.borderBottom = '1px solid #eee';
+                    
+                    const nameSpan = document.createElement('span');
+                    nameSpan.innerHTML = `<span style="color:${sub.type === 'edge' ? 'blue' : 'red'}">●</span> ${sub.name}`;
+                    subItem.appendChild(nameSpan);
+
+                    const delBtn = document.createElement('button');
+                    delBtn.innerText = '×';
+                    delBtn.style.border = 'none';
+                    delBtn.style.background = 'none';
+                    delBtn.style.color = '#dc3545';
+                    delBtn.style.cursor = 'pointer';
+                    delBtn.style.fontWeight = 'bold';
+                    delBtn.style.fontSize = '16px';
+                    delBtn.title = '删除子区域';
+                    delBtn.onclick = (e) => {
+                        e.stopPropagation();
+                        deleteSubRegion(rIdx, sIdx);
+                    };
+                    subItem.appendChild(delBtn);
+                    
+                    subList.appendChild(subItem);
+                });
+            }
+            container.appendChild(subList);
+
+            // Add Button
+            const addBtn = document.createElement('button');
+            addBtn.className = 'btn';
+            addBtn.style.margin = '0';
+            addBtn.style.borderRadius = '0 0 5px 5px';
+            addBtn.style.fontSize = '14px';
+            addBtn.style.padding = '8px';
+            addBtn.innerHTML = '+ 添加子区域';
+            addBtn.onclick = () => addSubRegion(rIdx);
+            container.appendChild(addBtn);
+
+            listDiv.appendChild(container);
+        });
+    }
+
+    // 添加子区域
+    function addSubRegion(rIdx) {
+        const name = prompt("请输入新子区域的名称：");
+        if (!name) return;
+        
+        const region = configData.base_regions[rIdx];
+        if (!region.sub_regions) region.sub_regions = [];
+
+        // 默认位置：基于基础区域的第一个点，或者默认值
+        let startX = 100, startY = 100;
+        if (region.polygon_vertices && region.polygon_vertices.length > 0) {
+            startX = region.polygon_vertices[0][0] + 50;
+            startY = region.polygon_vertices[0][1] + 50;
+        }
+
+        const newSub = {
+            sub_region_id: `${region.region_id}_sub_${Date.now()}`,
+            name: name,
+            type: 'custom',
+            polygon_vertices: [
+                [startX, startY],
+                [startX + 100, startY],
+                [startX + 100, startY + 100],
+                [startX, startY + 100]
+            ],
+            layer_index: null,
+            edge_vector: null
+        };
+
+        region.sub_regions.push(newSub);
+        renderRegions();
+        renderRegionList();
+    }
+
+    // 删除子区域
+    function deleteSubRegion(rIdx, sIdx) {
+        if(confirm('确定要删除这个子区域吗？')) {
+            configData.base_regions[rIdx].sub_regions.splice(sIdx, 1);
+            renderRegions();
+            renderRegionList();
+        }
+    }
+
+    // 5. 保存到服务器
+    async function saveToServer() {
+        try {
+            const btn = document.querySelector('button[onclick="saveToServer()"]');
+            const originalText = btn.innerText;
+            btn.innerText = "正在保存...";
+            btn.disabled = true;
+
+            const response = await fetch('/save', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(configData)
+            });
+            const result = await response.json();
+            
+            if(result.status === 'success') {
+                alert('✅ 保存成功！');
+            } else {
+                alert('❌ 保存失败');
+            }
+            
+            btn.innerText = originalText;
+            btn.disabled = false;
+        } catch (e) {
+            console.error(e);
+            alert('❌ 保存请求出错');
+            document.querySelector('button[onclick="saveToServer()"]').disabled = false;
+        }
+    }
+</script>
+
+</body>
+</html>

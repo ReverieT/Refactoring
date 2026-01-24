@@ -1,0 +1,105 @@
+base_regions:
+- arm_id: left_arm
+  calibration_resolution:
+  - 1408
+  - 1024
+  name: 左区（移栽机）
+  polygon_vertices:
+  - - 100
+    - 140
+  - - 726
+    - 145
+  - - 705
+    - 1025
+  - - 95
+    - 1023
+  region_id: left_zone
+  sub_regions:
+  - edge_vector: null
+    layer_index: null
+    name: left_area_top
+    polygon_vertices:
+    - - 157
+      - 143
+    - - 727
+      - 146
+    - - 726
+      - 236
+    - - 157
+      - 231
+    sub_region_id: left_zone_sub_1768234665863
+    type: edge
+  - edge_vector: null
+    layer_index: null
+    name: left_area_left
+    polygon_vertices:
+    - - 101
+      - 140
+    - - 183
+      - 142
+    - - 179
+      - 1018
+    - - 96
+      - 1019
+    sub_region_id: left_zone_sub_1768234713870
+    type: edge
+  - edge_vector: null
+    layer_index: null
+    name: left_area_right
+    polygon_vertices:
+    - - 649
+      - 147
+    - - 727
+      - 146
+    - - 705
+      - 1022
+    - - 640
+      - 1020
+    sub_region_id: left_zone_sub_1768234760224
+    type: edge
+- arm_id: right_arm
+  calibration_resolution:
+  - 1408
+  - 1024
+  name: 右区（传送带）
+  polygon_vertices:
+  - - 723
+    - 144
+  - - 1406
+    - 162
+  - - 1406
+    - 1023
+  - - 1050
+    - 1020
+  - - 712
+    - 914
+  region_id: right_zone
+  sub_regions:
+  - edge_vector: null
+    layer_index: null
+    name: right_area_base
+    polygon_vertices:
+    - - 729
+      - 146
+    - - 1404
+      - 161
+    - - 872
+      - 297
+    - - 724
+      - 294
+    sub_region_id: right_zone_sub_1768234797744
+    type: near_base
+  - edge_vector: null
+    layer_index: null
+    name: right_area_under
+    polygon_vertices:
+    - - 707
+      - 846
+    - - 1409
+      - 1026
+    - - 1052
+      - 1019
+    - - 710
+      - 915
+    sub_region_id: right_zone_sub_1768234867786
+    type: edge
