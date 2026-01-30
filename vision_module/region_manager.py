@@ -6,10 +6,19 @@ from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Dict, Literal
 from pathlib import Path
 
-LeftRegionStatus = Literal["sort", "up", "remove"]  # 左区状态：分拣、上料、剔除
-RightRegionStatus = Literal["sort", "up"]  # 右区状态：分拣、上料
-RegionStatus = Literal["sort", "up", "remove"]  # 统一区域状态（兼容左/右区，用于BaseRegion字段）
+# LeftRegionStatus = Literal["sort", "up", "remove"]  # 左区状态：分拣、上料、剔除
+# RightRegionStatus = Literal["sort", "up"]  # 右区状态：分拣、上料
+# RegionStatus = Literal["sort", "up", "remove"]  # 统一区域状态（兼容左/右区，用于BaseRegion字段）
 ValidSceneStatus = Literal["L-sort_R-sort", "L-sort_R-up", "L-up_R-up", "L-remove_R-up"]
+
+from enum import Enum
+
+class RegionStatus(Enum):
+    SORT = "sort"
+    UP = "up"
+    REMOVE = "remove"
+
+
 
 # ---------------------- 数据结构（满足多边缘层+边缘向量+基座层不抓取） ----------------------
 @dataclass
@@ -64,7 +73,7 @@ class BaseRegion:
     sub_regions: List[SubRegion] = field(default_factory=list)
     calibration_resolution: Tuple[int, int] = (1408, 1024)  # 标定时相机分辨率
 
-    region_status: RegionStatus = "sort"  # 区域当前状态（分拣、上料、剔除）
+    region_status: RegionStatus = RegionStatus.SORT  # 区域当前状态（分拣、上料、剔除）
 
 
     def is_point_inside(self, point: Tuple[int, int]) -> bool:
@@ -94,6 +103,8 @@ class RegionManager:
         # 初始化时加载现有配置（若存在）
         if self.config_path.exists():
             self.load_config()
+        else:
+            print(f"警告：未找到配置文件 {self.config_path}，将使用默认配置。")
 
     def load_config(self) -> bool:
         """从YAML文件加载区域配置"""

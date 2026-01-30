@@ -15,3 +15,15 @@ test_data/
 # 运行文件
 __pycache__/
 *.pyc
+
+# IDE + 调试
+.vscode/
+
+
+# 其他部分负责文件
+utils/
+Mv3dRgbdImport/
+Mv3dRgbdLog/
+
+# 未来模块
+future/

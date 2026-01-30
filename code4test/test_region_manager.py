@@ -1,10 +1,11 @@
 # 新建test_region.py（仅用于测试，可选）
-from region_manager import RegionManager
+from vision_module.region_manager import RegionManager
+from vision_module.vision_utils import get_vision_resource_path
 
 def test_yaml_loading():
     """测试加载YAML配置文件"""
     # 1. 初始化区域管理器，自动加载当前目录下的region_config.yaml
-    region_manager = RegionManager(config_path="./region_config.yaml")
+    region_manager = RegionManager(config_path=get_vision_resource_path("region_config.yaml"))
 
     # 2. 验证加载结果（打印基础区域和子区域信息）
     for base_region in region_manager.base_regions:

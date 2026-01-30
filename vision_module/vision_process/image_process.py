@@ -2,31 +2,33 @@
 # File: image_process.py
 # Part 1: 工程中主要使用的函数
 # Part 2: 未使用的函数
+# 2026/1/25: 在next_vision分支精简代码，删除未使用代码
 #################################################################
-__all__ = ['model', 'obb_model',                                # models
+__all__ = ['OBB_MODEL_PATH', 'warm_up',                         # models
            'show_color_image', 'show_depth_image',              # display and visualization
-           'depthBit11To8', 'threshTwoPeaks', 'obb_mask',       # process
+           'depthBit11To8',  'obb_mask',       # process
            'iou_similarity', 'put_text',  # tools
            'compute_depth_diff', 'mask_left', 'mask_left_right',       # for depth
-
            ]
-# models
-from ultralytics import YOLO
-from utils import path_utils
-# model = YOLO('./vision_resources/best.pt')
-model = YOLO(path_utils.get_resource_path('resources/vision/best.pt'))
-# obb_model = YOLO(path_utils.get_resource_path('resources/vision/best_obb.pt'))
-# obb_model = YOLO(path_utils.get_resource_path('resources/vision/weights-11n/last.pt'))
-obb_model = YOLO(path_utils.get_resource_path('resources/vision/weights/last.pt'))
-# model.predict(source = "./vision_resources/yolo_test.png")
-model.predict(source = path_utils.get_resource_path("resources/vision/yolo_test.png"))
-obb_model.predict(source = path_utils.get_resource_path("resources/vision/yolo_test.png"))
 
-# image processing
 import cv2
 import numpy as np
+from utils import path_utils
 
-## display and visualization
+#-------------------------------#
+# models
+#-------------------------------#
+OBB_MODEL_PATH = path_utils.get_resource_path('resources/vision/weights/last.pt')
+def warm_up(model):
+    """
+    使用方式: ##加载资源 obb_model = YOLO(OBB_MODEL_PATH)
+            ##预热模型 warm_up(obb_model)
+    """
+    model.predict(source = path_utils.get_resource_path("resources/vision/yolo_test.png"))
+#-------------------------------#
+# display and visualization
+#  一般用于调试
+#-------------------------------#
 def show_color_image(color_image, window_name='Color Image'):
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.imshow(window_name, color_image)
@@ -34,66 +36,20 @@ def show_color_image(color_image, window_name='Color Image'):
     cv2.destroyAllWindows()
 def show_depth_image(depth_image, window_name='Depth Image'):
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    # NOTE : 深度图的归一化效果不好，待修改为直接截取
     depth_normalized = cv2.normalize(depth_image, None, 0, 255, cv2.NORM_MINMAX)
     depth_normalized = np.uint8(depth_normalized)
     depth_colormap = cv2.applyColorMap(depth_normalized, cv2.COLORMAP_JET)
     cv2.imshow(window_name, depth_colormap)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
-# HACK : 深度图的归一化效果不好，待修改为直接截取
-
+#-------------------------------#
+# process
+#-------------------------------#
 def depthBit11To8(depth_data):
     depth_data_8bit = (depth_data >> 3).astype(np.uint8)  
     return depth_data_8bit
 
-# process
-#阈值分割：直方图技术法
-def threshTwoPeaks(image):
-    # if len(image.shape) == 2:
-    #     gray = image
-    # else:
-    #     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    gray = image
-    #计算灰度直方图
-    #----------------------------#
-    def calcGrayHist(grayimage):
-        hist = cv2.calcHist([grayimage], [0], None, [256], [0, 256])
-        return hist.flatten()
-    #----------------------------#
-    # def calcGrayHist(grayimage):
-    #     rows, cols = grayimage.shape
-    #     grayHist = np.zeros([256],np.uint64)
-    #     for r in range(rows):
-    #         for c in range(cols):
-    #             grayHist[grayimage[r][c]] += 1
-    #     return grayHist
-    #----------------------------#
-    histogram = calcGrayHist(gray)
-    # NOTE: 对于深度图, 深度图为0无效
-    histogram[0] = 0
-    maxLoc = np.where(histogram==np.max(histogram))
-    firstPeak = maxLoc[0][0]
-    measureDists = np.zeros([256],np.float32)
-    for k in range(256):
-        measureDists[k] = pow(k-firstPeak,2)*histogram[k]
-    maxLoc2 = np.where(measureDists==np.max(measureDists))
-    secondPeak = maxLoc2[0][0]
-    thresh = 0
-    if firstPeak > secondPeak:   #第一个峰值在第二个峰值的右侧
-        temp = histogram[int(secondPeak):int(firstPeak)]
-        minloc = np.where(temp == np.min(temp))
-        thresh = secondPeak + minloc[0][0] + 1
-    else:#第一个峰值在第二个峰值的左侧
-        temp = histogram[int(firstPeak):int(secondPeak)]
-        minloc = np.where(temp == np.min(temp))
-        thresh =firstPeak + minloc[0][0] + 1
-    center_x, center_y = gray.shape[1] // 2, gray.shape[0] // 2
-    center_depth = gray[center_y, center_x]
-    if center_depth < thresh:
-        threshImage_out = (gray < thresh).astype(np.uint8) * 255
-    else:
-        threshImage_out = (gray >= thresh).astype(np.uint8) * 255
-    return thresh, threshImage_out
 def obb_mask(depth_roi, box):
     """
     生成基于旋转框的mask
@@ -106,10 +62,10 @@ def obb_mask(depth_roi, box):
     points = xyxyxyxy.reshape((-1, 1, 2))  # 将四个点的坐标转换为 OpenCV 填充所需的格式
     cv2.fillPoly(mask, [points], color=1)  # 在 mask 上绘制旋转框
     return mask
+#-------------------------------#
 # tools
+#-------------------------------#
 # 返回两组框标的相似度
-#----------------------------#
-#----------------------------#
 def iou_similarity(box_A, box_B):
     A = np.array(box_A.xyxy.tolist()[0])
     B = np.array(box_B.xyxy.tolist()[0])
@@ -118,19 +74,16 @@ def iou_similarity(box_A, box_B):
     y1 = max(A[1], B[1])
     x2 = min(A[2], B[2])
     y2 = min(A[3], B[3])
-
     # 计算交集面积
     inter_area = max(0, x2 - x1) * max(0, y2 - y1)
-
     # 并集面积
     area_A = (A[2] - A[0]) * (A[3] - A[1])
     area_B = (B[2] - B[0]) * (B[3] - B[1])
     union_area = area_A + area_B - inter_area
-
     return inter_area / (union_area + 1e-6)
+
 def put_text(image, label, center_2d, color=(0, 255, 0)):
     cv2.putText(image, label, center_2d, cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-#----------------------------#
 
 # for depth
 depth_ref = cv2.imread(path_utils.get_resource_path('resources/vision/reference_depth.png'), cv2.IMREAD_UNCHANGED)  # uint16
@@ -192,31 +145,53 @@ def compute_depth_diff(depth_curr, depth_ref=depth_ref, mask=None, threshold=30,
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-##################################################################
 ##############################分割线###############################
-# 下面的函数并没有在工程中使用
-def combined_similarity(box_A, box_B):
-    A = box_A.xyxy.tolist()[0]
-    B = box_B.xyxy.tolist()[0]
-    cosine = np.dot(A, B) / (np.linalg.norm(A) * np.linalg.norm(B))
-    length_penalty = min(np.linalg.norm(A), np.linalg.norm(B)) / max(np.linalg.norm(A), np.linalg.norm(B))
-    return cosine * length_penalty
-def get_color_depth_image(depth_image):
-    depth_normalized = cv2.normalize(depth_image, None, 0, 255, cv2.NORM_MINMAX)
-    depth_normalized = np.uint8(depth_normalized)
-    depth_colormap = cv2.applyColorMap(depth_normalized, cv2.COLORMAP_JET)
-    return depth_colormap
+
+# 已弃用代码
+__deprecated__ = [
+    'MODEL_PATH',               # 水平框目标检测模型
+    'threshTwoPeaks',           # 直方图法双峰法获得两个阈值
+    'get_mask_from_depth',      # 使用双阈值法获得mask
+    'watershed_segmentation',   # 传统分割方法：RGB分水岭方法对图像进行分割
+    'get_grasp_point_and_normal',   # 中心点抓取法：按照图像中心点坐标和法向量进行抓取
+    ]
+
+# 目标检测模型，已启用
+MODEL_PATH = path_utils.get_resource_path('resources/vision/best.pt')
+
+def threshTwoPeaks(image):
+    # 假设输入为深度图
+    gray = image
+    def calcGrayHist(grayimage):
+        hist = cv2.calcHist([grayimage], [0], None, [256], [0, 256])
+        return hist.flatten()
+    histogram = calcGrayHist(gray)
+    # 对于深度图, 深度图为0无效
+    histogram[0] = 0
+    maxLoc = np.where(histogram==np.max(histogram))
+    firstPeak = maxLoc[0][0]
+    measureDists = np.zeros([256],np.float32)
+    for k in range(256):
+        measureDists[k] = pow(k-firstPeak,2)*histogram[k]
+    maxLoc2 = np.where(measureDists==np.max(measureDists))
+    secondPeak = maxLoc2[0][0]
+    thresh = 0
+    if firstPeak > secondPeak:   #第一个峰值在第二个峰值的右侧
+        temp = histogram[int(secondPeak):int(firstPeak)]
+        minloc = np.where(temp == np.min(temp))
+        thresh = secondPeak + minloc[0][0] + 1
+    else:#第一个峰值在第二个峰值的左侧
+        temp = histogram[int(firstPeak):int(secondPeak)]
+        minloc = np.where(temp == np.min(temp))
+        thresh =firstPeak + minloc[0][0] + 1
+    center_x, center_y = gray.shape[1] // 2, gray.shape[0] // 2
+    center_depth = gray[center_y, center_x]
+    if center_depth < thresh:
+        threshImage_out = (gray < thresh).astype(np.uint8) * 255
+    else:
+        threshImage_out = (gray >= thresh).astype(np.uint8) * 255
+    return thresh, threshImage_out
+
 def get_mask_from_depth(roi_depth: np.ndarray) -> np.ndarray:
     height, width = roi_depth.shape
     center_x = width // 2
@@ -279,28 +254,6 @@ def watershed_segmentation(binary_mask: np.ndarray, color_image: np.ndarray):
     # show_color_image(color_with_boundaries, "Contours")
 
     return markers
-
-
-
-def overlay_mask_on_image(image, mask, color=(0, 255, 0), alpha=0.4):
-    """
-    将掩码 mask 以半透明的颜色叠加在 image 上
-    :param image: 原图 (H, W, 3)，BGR格式
-    :param mask: 掩码 (H, W)，0或255或bool类型
-    :param color: 叠加颜色，BGR格式元组
-    :param alpha: 透明度，0~1 之间
-    :return: 带掩码叠加的图像
-    """
-    overlay = image.copy()
-    mask_colored = np.zeros_like(image, dtype=np.uint8)
-    mask_colored[:, :] = color  # 给整个图填上颜色
-
-    # 使用掩码选中区域进行颜色混合
-    mask_binary = (mask > 0)  # 确保是布尔掩码
-    overlay[mask_binary] = cv2.addWeighted(image[mask_binary], 1 - alpha, mask_colored[mask_binary], alpha, 0)
-
-    return overlay
-
 
 def get_grasp_point_and_normal(x1, y1, mask, depth_img, intrinsics, depth_scale=1000.0, patch_size=5):
     """
@@ -365,3 +318,5 @@ def get_grasp_point_and_normal(x1, y1, mask, depth_img, intrinsics, depth_scale=
         normal = -normal
 
     return grasp_point_3d, normal
+
+##############################分割线###############################

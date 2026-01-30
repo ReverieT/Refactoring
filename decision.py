@@ -15,7 +15,7 @@ import copy
 import traceback
 import threading
 from enum import Enum, auto
-from queue import Queue
+from queue import Queue, Empty
 from collections import Counter
 
 class ZoneIntent(Enum):
@@ -81,13 +81,9 @@ class DecisionModule:
         self.remove_flag = False            # True: 执行器正在运动; False: 执行器停止运动
 
     # ---------------------------------------------------------
-    # Producer: 视觉模块调用的接口 
+    # Producer: 视觉模块负责生产视觉结果，通过调用get_latest_result()方法获取
     # ---------------------------------------------------------  
-    def update_left_task(self, result: VisionResult):
-        self.left_task_buffer.write(result)
-
-    def update_right_task(self, result: VisionResult):
-        self.right_task_buffer.write(result)
+    # self.vision_module.get_latest_result() 会返回最新的视觉结果
 
     # ---------------------------------------------------------
     # Intermediary & Arbitrator: 决策主逻辑 
@@ -98,15 +94,10 @@ class DecisionModule:
                 time.sleep(0.05)    # 防止死循环空转占用CPU
                 continue
             try:
-                left_raw_result = self.left_task_buffer.read()
-                right_raw_result = self.right_task_buffer.read()
-                # 深拷贝防止数据被修改
-                if left_raw_result:
-                    left_result = copy.deepcopy(left_raw_result)
-                    self._vision_result_infer(left_result)
-                if right_raw_result:
-                    right_result = copy.deepcopy(right_raw_result)
-                    self._vision_result_infer(right_result)
+                vision_result = self.vision_module.get_latest_result()
+                left_result, right_result = vision_result
+                self._vision_result_infer(left_result)
+                self._vision_result_infer(right_result)
                 
                 if self.left_zone_state == ZoneIntent.UP:
                     self.set_right_zone_state(ZoneIntent.UP)
@@ -160,6 +151,7 @@ class DecisionModule:
             """
         elif result.cmd == 'up':
             # [up -> sort] or [up keeps]
+            # [TODO]这里需要修改为视觉部分满足上料需求，光流法已删除
             if result.flow_result is finished:
                 set_zone_state_func(ZoneIntent.SORT)
             else:
@@ -345,7 +337,7 @@ class DecisionModule:
         while not q.empty():
             try:
                 q.get_nowait()
-            except queue.Empty:
+            except Empty:
                 break
 
 if __name__ == '__main__':
@@ -501,3 +493,7 @@ if __name__ == '__main__':
 # TODO: FlowResult
 # has_catched_left_list 能否直接调vision_module的数据 clear能不能继续用
 # 或者让视觉调这边
+########################
+# 一、 视觉模块的线程 1. 视觉主线程 2. 处理线程池 3. 相机驱动线程
+#   视觉主线程负责调用处理线程池，数据驱动，会因相机驱动线程的数据而阻塞
+#   因此视觉这边的急停设置只需要设置相机驱动线程的急停即可（TODO: 设置相机驱动线程的阻塞与恢复）

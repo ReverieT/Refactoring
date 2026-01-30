@@ -1,3 +1,8 @@
+"""
+使用方式：
+在系统根目录下运行：
+python -m code4test.test_camera_driver_only
+"""
 import time
 import cv2
 import numpy as np
@@ -25,6 +30,7 @@ def test_driver_raw():
             frame_count = 0
             
             while True:
+                time.sleep(0.05)
                 # 尝试获取最新帧
                 try:
                     frame = cam.get_latest_frame()

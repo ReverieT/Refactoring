@@ -11,6 +11,7 @@ from datetime import datetime
 
 from ctypes import pointer, byref, c_uint
 import logging
+from typing import Optional
 
 # 配置接入前，暂时使用本文件的日志【TODO: 后续接入日志系统】
 logging.basicConfig(
@@ -222,7 +223,7 @@ class CameraDriver:
         logger.info(f"相机 {self.serial_number} 采集线程创建完成")
     
     # 接口
-    def get_latest_frame(self, block: bool = True, timeout: int = None) -> ImageFrame or None:
+    def get_latest_frame(self, block: bool = True, timeout: int = None) -> Optional[ImageFrame]:
         """
         获取最新图像帧（返回ImageFrame数据结构，线程安全）
         block: True时若无新帧即等待；timeout: None表示无限等待"""
@@ -297,4 +298,8 @@ with CameraDriver(serial_number='00DA5939159') as camera:
 """
 Note:
     1. 目前驱动是根据轮询机制实现的，实际上也可以根据回调注册机制实现。个人认为二者是等价的。
+"""
+"""
+TODO:
+    1. 目前的代码实现实际上无法在相机的启动阶段，识别到相机是否正确连接。
 """

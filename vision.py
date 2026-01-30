@@ -1,123 +1,40 @@
-from ctypes import *
-
 import cv2
-import open3d as o3d
 import numpy as np
-from datetime import datetime
-import os
+import open3d as o3d
+from ultralytics import YOLO
+
+import copy
 import time
-import base64
+import queue
+from ctypes import *
+from threading import Thread
+from collections import deque
+from typing import List, Tuple, Optional, Dict, Literal
+from concurrent.futures import ThreadPoolExecutor, as_completed
+# from datetime import datetime
 
 # 内部库
 from vision_module.vision_process import *
 from vision_module.camera_driver import CameraDriver
-from vision_module.data_structures import ImageFrame
+from vision_module.data_structures import ImageFrame, PackageInfo, PackageStatus, VisionResult
+from vision_module.region_manager import RegionManager, ValidSceneStatus, RegionStatus
 
-from ParcelInfo import *
-from utils import constant, path_utils
 
-from collections import deque
-
+extrinsic = np.array([[0.99996193, -0.0087372, 0.0040242, 0.0207509],
+                      [0.00874224, 0.99996229, -0.0040122, -0.0207462],
+                      [-0.0040195, 0.0040284, 0.9999626, 0.0207415],
+                      [0.0, 0.0, 0.0, 1.0]])
 paecel_types = {0: 'cardboard_box',
                 1: 'cardboard_box_color', 
                 2: 'bubble_mailer', 
                 3: 'plastic_mailer', 
                 4: 'robot'}
 
-class FlowPipeline:
-    def __init__(self, logger) -> None:
-        self.logger = logger
-        self.flow_queue = deque(maxlen=16)   # 用于存储场景图片的队列，16帧约2s
-        self.set_state = FlowState.Static  # 初始状态为静态
-        self.real_state = FlowState.Static  # 实际状态，初始为静态
-
-        self.previous_frame = None  # 上一帧
-        self.current_frame = None   # 当前帧
-
-        self.ratio_history = deque(maxlen=6)   # 用于稳定判断
-
-        # 阈值（后面你再根据现场微调）
-        self.T_MOVE = 0.15     # 认为“明显在动”
-        self.T_STATIC = 0.05   # 认为“基本静止”
-        self.STABLE_N = 4      # 连续N帧稳定
-
-    # 对外接口
-    def push_frame(self, frame):
-        self.flow_queue.append(frame)
-    
-    def get_state(self):
-        return self.real_state
-
-    def run(self):
-        self.current_frame = self.flow_queue.popleft()  # 【TODO: 注意：要保证这里是阻塞等待】
-        if self.previous_frame is None:
-            self.previous_frame = self.current_frame
-            return None
-        result = self.flow_process(self.previous_frame, self.current_frame)
-        self.previous_frame = self.current_frame
-        return result
-            
-    def flow_process(self, previous_frame, current_frame, roi):
-        x,y,w,h = roi
-        # 1. 转换为灰度图
-        pre_gray = cv2.cvtColor(previous_frame, cv2.COLOR_BGR2GRAY)
-        cur_gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
-        # 2. 裁剪ROI区域
-        pre_gray_roi = pre_gray[y:y+h, x:x+w]
-        cur_gray_roi = cur_gray[y:y+h, x:x+w]
-        # 3. 计算光流
-        flow = cv2.cv2.calcOpticalFlowFarneback(
-            pre_gray_roi, cur_gray_roi, None,
-            pyr_scale=0.5,
-            levels=3,
-            winsize=15,
-            iterations=3,
-            poly_n=5,
-            poly_sigma=1.2,
-            flags=0
-        )
-
-        mag = np.sqrt(flow[...,0]**2 + flow[...,1]**2)
-        ratio = np.mean(mag > 1.0)
-        self.ratio_history.append(ratio)
-        self._update_state(ratio)
-        return {
-            "ratio": ratio,
-            "state": self.real_state,
-            "mag_mean": float(mag.mean()),
-            "mag_median": float(np.median(mag))
-        }
-    def _update_state(self, ratio):
-        if self.real_state == FlowState.Static:
-            if ratio > self.T_MOVE:
-                self.logger.info("Flow: detect incoming motion")
-                self.real_state = FlowState.Incoming
-        # 已检测到上料过程
-        elif self.real_state == FlowState.Incoming:
-            if self._is_stable():
-                self.logger.info("Flow: become stable ready")
-                self.real_state = FlowState.StableReady
-        elif self.real_state == FlowState.StableReady:
-            if ratio > self.T_MOVE:
-                self.logger.info("Flow: move again")
-                self.real_state = FlowState.Incoming
-
-    def _is_stable(self):
-        if len(self.ratio_history) < self.STABLE_N:
-            return False
-        last = list(self.ratio_history)[-self.STABLE_N:]
-        # 1. 都小于静止阈值
-        cond1 = all(r < self.T_STATIC for r in last)
-        # 2. 波动很小
-        cond2 = (max(last) - min(last)) < 0.03
-        return cond1 and cond2
-
-
-
 class ProcessPipeline:
-    def __init__(self, logger, region_manager) -> None:
+    def __init__(self, logger, region_manager, intrinsics) -> None:
         self.logger = logger
         self.region_manager = region_manager
+        self.intrinsics = intrinsics
 
         self.frame = None
         self.timestamp = None   # 帧时间戳
@@ -127,7 +44,6 @@ class ProcessPipeline:
 
         self.vision_result = None  # 包裹检测结果
 
-        self.parcel_list = []  # 所有包裹列表
         self.left_parcel_list = []  # 左区包裹列表
         self.right_parcel_list = []  # 右区包裹列表
         self.robot_flag_left = False  # 左区是否有机械臂
@@ -141,12 +57,12 @@ class ProcessPipeline:
         self.step_times = {}  # 各步骤耗时
         self.total_time = 0.0  # 总耗时
 
-        # 初始化必要资源（如检测模型，根据你的实际情况调整）
-        ## 1. 检测模型
+        # 初始化必要资源 1. 模型
         ## 2. 对比图片
-        # resource
-        self.obb_model = obb_model  # TODO 这种写法可能并不推荐
-        self.compare_img = cv2.imread(path_utils.get_resource_path("compare.png"))
+        self.obb_model = YOLO(OBB_MODEL_PATH)
+        warm_up(self.obb_model)
+
+        # self.compare_img = cv2.imread(path_utils.get_resource_path("compare.png"))
 
     def put_frame(self, frame):
         self.frame = frame
@@ -154,54 +70,53 @@ class ProcessPipeline:
         self.depth_data = frame.depth_data
         self.timestamp = self.frame.timestamp or time.strftime('%Y-%m-%d_%H-%M-%S_%f', time.localtime())
 
-    def run(self, run_cmd):
+    def run(self):
         """
         运行一次处理流程（从相机取图到包裹检测） 处理一次
         :param run_cmd: 'all', 'left', 'right'
         """
+        # 清空变量
+        t0 = time.time()
+        self.left_parcel_list.clear()
+        self.right_parcel_list.clear()
         results = self.obb_model.predict(source=self.color_data,
-                        conf=0.7,
-                        # max_det=4,
+                        conf=0.4,
                         iou=0.75,
                         half=True,
                         agnostic_nms=True,
                         device=0)
         self.detect_result = results[0]
         self._sort_region()
-        if run_cmd == 'all':
-            self.vision_result = self.parcels_parallel_process(self.parcel_list)
-        elif run_cmd == 'left':
-            self.vision_result = self.parcels_parallel_process(self.left_parcel_list)
-        elif run_cmd == 'right':
-            self.vision_result = self.parcels_parallel_process(self.right_parcel_list)
-        else:
-            raise ValueError(f"Invalid run_cmd: {run_cmd}")
+        left_list = self.parcels_parallel_process(self.left_parcel_list)
+        right_list = self.parcels_parallel_process(self.right_parcel_list)
+        cost = (time.time() - t0) * 1000
+        self.logger.info(f"[性能] 单帧处理耗时: {cost:.1f}ms | 左区:{len(left_list)} 右区:{len(right_list)}")
+        return left_list, right_list
 
     def _sort_region(self):
         for id, box in enumerate(self.detect_result.obb):
-            parcel = PackageInfo()
+            parcel = PackageInfo(timestamp=self.timestamp, obb=box)
             # 包裹初步封装
             parcel.package_id = f"pkg_{self.timestamp.replace('-', '').replace('_', '')[:14]}_{id:03d}"
-            parcel.timestamp = self.timestamp
-            parcel.obb = box
             parcel.center_pixel = (box.xywhr[0][0].item(), box.xywhr[0][1].item())
             base_region, sub_region = self.region_manager.get_region_of_point(parcel.center_pixel)
             parcel.base_region_id = base_region.region_id if base_region else "dead_zone"
-            parcel.sub_region_id = sub_region.region_id if sub_region else None
+            parcel.sub_region_id = sub_region.sub_region_id if sub_region else None
             parcel.type = paecel_types[box.cls.item()]
             if base_region and base_region.region_id == 'left_zone':
+                # TODO: 后续修改为不直接使用数字
+                parcel.arm_id = 1
                 self.left_parcel_list.append(parcel)
-                self.parcel_list.append(parcel)
             elif base_region and base_region.region_id == 'right_zone':
+                parcel.arm_id = 2
                 self.right_parcel_list.append(parcel)
-                self.parcel_list.append(parcel)
 
     def parcel_process(self, parcel: PackageInfo) -> PackageInfo:
         # TODO:在PackageInfo设置一个字段表示是否正确处理到结尾，默认为False，处理结束为True
         # PackageStatus：涉及到这部分的设计与初始化
-        self.logger.debug(f"包裹[{parcel.package_id}] 基础标识信息填充完成：时间戳={parcel.timestamp}，检测索引={parcel.detect_index}")
-        parcel.status = PackageStatus.unsolve   # 【提示】：包裹默认状态unsolve(未解算)
-        box = parcel.box
+        self.logger.debug(f"包裹[{parcel.package_id}] 基础标识信息填充完成：时间戳={parcel.timestamp}")
+        parcel.status = PackageStatus.UNSOLVE   # 【提示】：包裹默认状态unsolve(未解算)
+        box = parcel.obb
         x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
         x1 = max(0, x1)
         y1 = max(0, y1)
@@ -223,10 +138,11 @@ class ProcessPipeline:
             parcel.error_msg = "无法获取包裹中心点对应的3D坐标"
             return parcel
         # TODO: 这里需要修改为使用参考图像来进行判断
-        if center_3d[2] > self.ddepth + 50:
-            parcel.error_msg = f"包裹深度过高，不在分拣台上，相机坐标系depth=={center_3d[2]}"
-            return parcel
+        # if center_3d[2] > self.ddepth + 50:
+        #     parcel.error_msg = f"包裹深度过高，不在分拣台上，相机坐标系depth=={center_3d[2]}"
+        #     return parcel
         # TODO: 下面两条需要重新研判
+        self.logger.debug(f"[深度] 包裹 {parcel.package_id} 相机Z距离: {center_3d[2]:.1f}mm")
         roi_pcd_vds = roi_pcd.voxel_down_sample(voxel_size=10)  # 0.01 *1000
         roi_pcd_vds = normal_cluster(roi_pcd_vds)
         if roi_pcd_vds is None:
@@ -239,7 +155,7 @@ class ProcessPipeline:
                 parcel.error_msg = "hard_parcel识别错误"
                 return parcel
         elif parcel.type == 'bubble_mailer' or parcel.type == 'plastic_mailer': # soft_parcel
-            obb_info = soft_obb_info_v4(roi_pcd_vds, robot_arm = parcel.arm_id)
+            obb_info = soft_obb_info(roi_pcd_vds, robot_arm = parcel.arm_id)
             if obb_info is None:
                 parcel.error_msg = "soft_parcel识别错误"
                 return parcel
@@ -252,34 +168,39 @@ class ProcessPipeline:
             parcel.error_msg = "非包裹为机械臂"
             return None
         # 至此，包裹解算完成，置为解算状态
-        parcel.status = PackageStatus.solve
+        parcel.status = PackageStatus.SOLVE
         parcel.width = obb_info['short_edge']; parcel.height = obb_info['long_edge']
         parcel.obb_info = obb_info
 
         # TODO: 修改为与子区域法向量计算的安全墙操作
         cos_angle = filter_normals(obb_info['normal'])
         if cos_angle < 0.707:    # 改为45度
-            parcel.status = PackageStatus.ungraspable
+            parcel.status = PackageStatus.UNGRASPABLE
             parcel.error_msg = "包裹法向量夹角过大"
             return parcel
         # TODO: 高度参考需要修改 
-        if (max(obb_info['long_edge'], self.ddepth - center_3d[2]) > self.parcel_max_size) or (obb_info['short_edge'] < 95):
-            parcel.status = PackageStatus.ungraspable
+        # if (max(obb_info['long_edge'], self.ddepth - center_3d[2]) > self.parcel_max_size) or (obb_info['short_edge'] < 95):
+        # if max(obb_info['long_edge'], obb_info['short_edge']) > self.parcel_max_size:
+        if max(obb_info['long_edge'], obb_info['short_edge']) < 100:
+            parcel.status = PackageStatus.UNGRASPABLE
             parcel.error_msg = "包裹尺寸过小"
             return parcel
 
         # 检查包裹信息的封装[TODO]
         # 【TODO】(暂时可忽略，代码优先级低)将数据结构应用在tranform等方法中
         # 【TODO: 绘图】相应图片状态
-        parcel.status = PackageStatus.graspable
-        grasp_point_base = transform_point(obb_info['center'], side.extrinsic)
-        stay_point_base = transform_point(obb_info['stay3d'], side.extrinsic)
-        up_point_base = transform_point(obb_info['up3d'], side.extrinsic)
-        grasp_euler_base = transform_orientation(obb_info['R'], side.extrinsic)
+        parcel.status = PackageStatus.GRASPABLE
+        grasp_point_base = transform_point(obb_info['center'], extrinsic)
+        stay_point_base = transform_point(obb_info['stay3d'], extrinsic)
+        up_point_base = transform_point(obb_info['up3d'], extrinsic)
+        grasp_euler_base = transform_orientation(obb_info['R'], extrinsic)
         parcel.grasp_point.x,parcel.grasp_point.y,parcel.grasp_point.z = grasp_point_base
         parcel.stay_point.x,parcel.stay_point.y,parcel.stay_point.z = stay_point_base
         parcel.up_point.x,parcel.up_point.y,parcel.up_point.z = up_point_base
-        parcel.r.rx,parcel.r.ry,parcel.r.rz = grasp_euler_base
+        parcel.euler_angle.rx,parcel.euler_angle.ry,parcel.euler_angle.rz = grasp_euler_base
+        self.logger.info(f"[结果] 包裹 {parcel.package_id}: "
+                 f"抓取点 World(x={parcel.grasp_point.x:.1f}, y={parcel.grasp_point.y:.1f}, z={parcel.grasp_point.z:.1f}) | "
+                 f"角度 Rz={parcel.euler_angle.rz:.2f}")
         return parcel
 
     def parcels_parallel_process(self, parcel_list: List[PackageInfo]) -> List[PackageInfo]:
@@ -288,7 +209,7 @@ class ProcessPipeline:
         """
         if not parcel_list:
             return []
-        max_workers = 5
+        max_workers = 10
         results = []
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_parcel = {executor.submit(self.parcel_process, parcel): parcel for parcel in parcel_list}
@@ -332,88 +253,50 @@ class VisionModule:
         self.region_manager = RegionManager(config_path=self.region_config_path)
         # 相机驱动层
         self.camera = CameraDriver(self.SERIAL_NUMBER, frame_queue_size=1, fetch_frame_timeout=5000)  # 持有CameraDriver实例
-        self.camera.__enter__() # 启动相机
+        # self.camera.__enter__() # 启动相机
 
-        # 两个消费端，一个生产端，三个线程
-        self.process_task_queue = queue.Queue(maxsize=10)
-        self.flow_task_queue = queue.Queue(maxsize=10)
-        self.process_thread = Thread(target=self._process_consumer_func, daemon=True)
-        self.flow_thread = Thread(target=self._flow_consumer_func, daemon=True)
-        self.process_thread.start()
-        self.flow_thread.start()
-        
+        # 视觉模块结果队列设置
+        self.result_queue = queue.Queue(maxsize=1)  # maxsize=1 时刻保持最新结果
+
         # 处理流程初始化
-        self.process_pipeline = ProcessPipeline(self.logger, self.region_manager)
-        self.flow_pipeline = FlowPipeline(self.logger)
+        self.process_pipeline = ProcessPipeline(self.logger, self.region_manager, self.intrinsics)
     
-    def _process_consumer_func(self):
-        """process_pipeline对应的消费者线程函数（持续监听任务队列）"""
-        while True:
-            try:
-                # 阻塞获取队列中的任务（无任务时挂起，有任务时自动唤醒）
-                # task是一个元组：(拷贝后的frame, 执行指令all/left/right)
-                frame_copy, run_cmd = self.process_task_queue.get()
-                
-                # 执行process_pipeline的核心逻辑（对应你原有代码）
-                self.process_pipeline.put_frame(frame_copy)
-                self.process_pipeline.run(run_cmd)
-                
-                # 标记任务处理完成（用于队列的task_done()/join()机制，可选但推荐）
-                self.process_task_queue.task_done()
-                
-            except Exception as e:
-                # 异常捕获：防止单个任务报错导致整个消费者线程崩溃
-                print(f"process_pipeline处理任务失败：{e}")
-                continue
-
-    def _flow_consumer_func(self):
-        """flow_pipeline对应的消费者线程函数（持续监听任务队列）"""
-        while True:
-            try:
-                # 阻塞获取队列中的任务
-                frame_copy, run_cmd = self.flow_task_queue.get()
-                
-                # 执行flow_pipeline的核心逻辑（对应你原有代码）
-                self.flow_pipeline.put_frame(frame_copy)
-                self.flow_pipeline.run(run_cmd)
-                
-                # 标记任务处理完成
-                self.flow_task_queue.task_done()
-                
-            except Exception as e:
-                # 异常捕获：保证线程健壮性
-                print(f"flow_pipeline处理任务失败：{e}")
-                continue
-
     def main_loop(self):
         while True:
             # 1.取图 2.根据区域状态信息将图片放入对应处理pipeline中与队列中 3.线程并行处理
             ## TODO 线程如何空闲与正确并行释放
             frame = self.camera.get_latest_frame()
-            # 获取区域状态信息
-            # TODO: 任务队列是不是可以从左右分区出发？
-            left_status = self.region_manager.get_region_status("left_zone")
-            right_status = self.region_manager.get_region_status("right_zone")
+            show_color_image(frame.color_data)
+            self.process_pipeline.put_frame(frame)
+            left_list, right_list = self.process_pipeline.run()
+            # 封装为VisionResult格式，与决策模块统一规范
+            # [TODO]封装cmd与has_robot
+            left_result = VisionResult(region_id='left_zone', package_list=left_list)
+            right_result = VisionResult(region_id='right_zone', package_list=right_list)
+            self._put_result_to_queue((left_result, right_result))
+            # 前端传图
+            # =========================================================
+            # 调试部分
+            # =========================================================
+            print_debug_report(self.logger, left_result, right_result)
+            # =========================================================
 
-            frame_copy1 = copy.deepcopy(frame)
-            frame_copy2 = copy.deepcopy(frame)
-            if left_status is RegionStatus.SORT:
-                self.process_task_queue.put((frame_copy1, "left"))
-            elif left_status is RegionStatus.UP:
-                self.flow_task_queue.put((frame_copy2, "left"))
-            elif left_status is RegionStatus.REMOVE:
-                pass
+
+            # 等待本次处理完成，回馈结果后，再取下一帧
             
-            if right_status is RegionStatus.SORT:
-                self.process_task_queue.put((frame_copy1, "right"))
-            elif right_status is RegionStatus.UP:
-                self.flow_task_queue.put((frame_copy2, "right"))
-
             # 4.负责处理结果的流程：与决策模块沟通结果
             # 决策模块也需要添加一个任务队列，也在主循环中阻塞处理
             # 传图模块
             # [TODO]
-        
+    def _put_result_to_queue(self, result): #这样简单处理一下就不阻塞了
+        if self.result_queue.full():
+            self.result_queue.get(block=False)  # 弹出最早的结果，腾出空间
+        self.result_queue.put(result)
+
+    # 给决策模块的接口
+    def get_lastest_result(self):
+        return self.result_queue.get(block=True, timeout=None)  # 阻塞等待最新结果，无超时时间设置（一直等待）
+
 
 if __name__ == "__main__":
     def frame_callback(frame_base64):
@@ -463,3 +346,54 @@ VisionModule
 然后进行处理，处理结束后（且确定决策模块已经根据处理结果进行了决策）再进行下一次循环取最新的图，每次都固定本次取图的结果直到循环结束
 通过特定的数据结果完成与决策模块的信息传递
 """
+
+# 放在 vision.py 文件的合适位置，或者作为 VisionModule 的成员函数
+def print_debug_report(logger, left_parcels: list, right_parcels: list):
+    """
+    打印本帧视觉处理的详细调试报告
+    """
+    # ------------------ 1. 统计数据 ------------------
+    l_total = len(left_parcels)
+    l_ok = sum(1 for p in left_parcels if p.status == PackageStatus.GRASPABLE)
+    
+    r_total = len(right_parcels)
+    r_ok = sum(1 for p in right_parcels if p.status == PackageStatus.GRASPABLE)
+
+    logger.info("=" * 60)
+    logger.info(f"【视觉帧报表】总计检测: {l_total + r_total} | 可抓取: {l_ok + r_ok}")
+    logger.info("-" * 60)
+
+    # ------------------ 2. 左区详情 ------------------
+    logger.info(f"🏛️ [左区 Left] (总数:{l_total}, 可抓:{l_ok})")
+    if l_total == 0:
+        logger.info("   (空)")
+    else:
+        for p in left_parcels:
+            _log_single_parcel(logger, p)
+
+    logger.info("-" * 30)
+
+    # ------------------ 3. 右区详情 ------------------
+    logger.info(f"🏛️ [右区 Right] (总数:{r_total}, 可抓:{r_ok})")
+    if r_total == 0:
+        logger.info("   (空)")
+    else:
+        for p in right_parcels:
+            _log_single_parcel(logger, p)
+            
+    logger.info("=" * 60)
+
+def _log_single_parcel(logger, p):
+    """辅助函数：打印单个包裹信息"""
+    pid = p.package_id.split('_')[-1] # 只显示最后序号，简洁一点，如 '001'
+    ptype = p.type
+    
+    if p.status == PackageStatus.GRASPABLE:
+        # 【可抓取】：打印 坐标 (x,y,z) + 角度 (rz)
+        # 假设坐标单位是 mm
+        pos_str = f"x={p.grasp_point.x:6.1f}, y={p.grasp_point.y:6.1f}, z={p.grasp_point.z:6.1f}"
+        angle_str = f"rz={p.euler_angle.rz:6.2f}"
+        logger.info(f"   ✅ [OK] ID:{pid} | {ptype:<15} | {pos_str} | {angle_str}")
+    else:
+        # 【不可抓】：打印 错误原因
+        logger.warning(f"   ❌ [NG] ID:{pid} | {ptype:<15} | 原因: {p.error_msg}")
