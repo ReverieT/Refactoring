@@ -200,7 +200,7 @@ class RegionManager:
         for base_region in self.base_regions:
             if base_region.region_id == region_id:
                 return base_region.region_status
-        return "sort"  # 默认返回分拣状态（区域不存在时）
+        return RegionStatus.SORT  # 默认返回分拣状态（区域不存在时）
     def set_region_status(self, region_id: str, status: RegionStatus) -> None:
         """对外接口：设置区域状态"""
         for base_region in self.base_regions:

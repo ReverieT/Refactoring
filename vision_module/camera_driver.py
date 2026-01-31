@@ -232,6 +232,10 @@ class CameraDriver:
         except queue.Empty:
             logger.debug(f"相机 {self.serial_number} 帧队列为空，无最新帧返回")
             return None
+    
+    def get_intrinsics(self) -> Dict[str, float]:
+        """获取相机内参（字典格式，包含fx, fy, cx, cy）"""
+        return self.intrinsics
 
     def __enter__(self):
         """上下文管理器进入方法（自动初始化、打开、启动相机）"""

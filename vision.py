@@ -77,6 +77,8 @@ class ProcessPipeline:
         """
         # 清空变量
         t0 = time.time()
+        self.robot_flag_left = False  # 左区是否有机械臂
+        self.robot_flag_right = False  # 右区是否有机械臂
         self.left_parcel_list.clear()
         self.right_parcel_list.clear()
         results = self.obb_model.predict(source=self.color_data,
@@ -90,8 +92,8 @@ class ProcessPipeline:
         left_list = self.parcels_parallel_process(self.left_parcel_list)
         right_list = self.parcels_parallel_process(self.right_parcel_list)
         cost = (time.time() - t0) * 1000
-        self.logger.info(f"[性能] 单帧处理耗时: {cost:.1f}ms | 左区:{len(left_list)} 右区:{len(right_list)}")
-        return left_list, right_list
+        self.logger.info(f"[性能] 单帧处理耗时: {cost:.1f}ms | 左区:{len(left_list)} 右区:{len(right_list)} 左区机械臂:{self.robot_flag_left} 右区机械臂:{self.robot_flag_right}")
+        return left_list, right_list, self.robot_flag_left, self.robot_flag_right
 
     def _sort_region(self):
         for id, box in enumerate(self.detect_result.obb):
@@ -245,7 +247,6 @@ class VisionModule:
         self.frame_callback = frame_callback
         # 常量配置
         self.SERIAL_NUMBER = '00DA5939159'
-        self.intrinsics = {'fx': 845.8645, 'fy': 849.886841, 'cx': 712.9507, 'cy': 546.7291}
         self.logger = Vision_logger
 
         # 区域管理器
@@ -254,6 +255,8 @@ class VisionModule:
         # 相机驱动层
         self.camera = CameraDriver(self.SERIAL_NUMBER, frame_queue_size=1, fetch_frame_timeout=5000)  # 持有CameraDriver实例
         # self.camera.__enter__() # 启动相机
+        self.intrinsics = {'fx': 845.8645, 'fy': 849.886841, 'cx': 712.9507, 'cy': 546.7291}    # [NOTE]: 调试语句
+        self.intrinsics = self.camera.get_intrinsics()
 
         # 视觉模块结果队列设置
         self.result_queue = queue.Queue(maxsize=1)  # maxsize=1 时刻保持最新结果
@@ -266,13 +269,15 @@ class VisionModule:
             # 1.取图 2.根据区域状态信息将图片放入对应处理pipeline中与队列中 3.线程并行处理
             ## TODO 线程如何空闲与正确并行释放
             frame = self.camera.get_latest_frame()
+            left_status = self.region_manager.get_region_status('left_zone')
+            right_status = self.region_manager.get_region_status('right_zone')
             show_color_image(frame.color_data)
             self.process_pipeline.put_frame(frame)
-            left_list, right_list = self.process_pipeline.run()
+            left_list, right_list, robot_flag_left, robot_flag_right = self.process_pipeline.run()
             # 封装为VisionResult格式，与决策模块统一规范
             # [TODO]封装cmd与has_robot
-            left_result = VisionResult(region_id='left_zone', package_list=left_list)
-            right_result = VisionResult(region_id='right_zone', package_list=right_list)
+            left_result = VisionResult(region_id='left_zone', package_list=left_list, has_robot=robot_flag_left, cmd=left_status)
+            right_result = VisionResult(region_id='right_zone', package_list=right_list, has_robot=robot_flag_right, cmd=right_status)
             self._put_result_to_queue((left_result, right_result))
             # 前端传图
             # =========================================================

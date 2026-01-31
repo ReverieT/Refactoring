@@ -119,10 +119,10 @@ class DecisionModule:
         elif result.region_id == 'right_zone':
             set_zone_state_func = self.set_right_zone_state
             catch_queue = self.right_catch_queue
+        counter, best_parcel = self._resolve_parcel_list(result.parcel_list)
         if result.cmd == 'sort':
             # [sort -> sort] or [sort -> up] or [sort -> remove]
             # 根据parcel.status对parcel_list进行分类
-            counter, best_parcel = self._resolve_parcel_list(result.parcel_list)
             if counter['graspable'] > 0:
                 # 排列优先级，将优先级最高的包裹加入catch_queue
                 catch_queue.put(best_parcel)
@@ -151,8 +151,8 @@ class DecisionModule:
             """
         elif result.cmd == 'up':
             # [up -> sort] or [up keeps]
-            # [TODO]这里需要修改为视觉部分满足上料需求，光流法已删除
-            if result.flow_result is finished:
+            # [TODO]这里需要修改为视觉部分满足上料需求，暂时修改为如果有包裹可抓取，就设置为SORT
+            if best_parcel is not None:
                 set_zone_state_func(ZoneIntent.SORT)
             else:
                 set_zone_state_func(ZoneIntent.UP)
