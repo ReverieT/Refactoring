@@ -50,14 +50,13 @@ class ProcessPipeline:
         self.robot_flag_right = False  # 右区是否有机械臂
 
         # 处理过程中的数据载体（类内属性，步骤间共享，无需额外上下文）【TODO: temp】
-        # self.color_img = None   # 业务处理用彩色图（避免修改原始数据）
-        
+        self.color_img = None   # 每帧处理彩色图，最终上传前端
 
         # 性能统计（可选，便于调试）
         self.step_times = {}  # 各步骤耗时
         self.total_time = 0.0  # 总耗时
 
-        # 初始化必要资源 1. 模型
+        # 初始化必要资源 1. 模型【TODO】
         ## 2. 对比图片
         self.obb_model = YOLO(OBB_MODEL_PATH)
         warm_up(self.obb_model)
@@ -68,6 +67,7 @@ class ProcessPipeline:
         self.frame = frame
         self.color_data = frame.color_data
         self.depth_data = frame.depth_data
+        self.color_img = self.color_data    # TODO: 先不拷贝，之后试试浅拷贝
         self.timestamp = self.frame.timestamp or time.strftime('%Y-%m-%d_%H-%M-%S_%f', time.localtime())
 
     def run(self):
@@ -81,9 +81,9 @@ class ProcessPipeline:
         self.robot_flag_right = False  # 右区是否有机械臂
         self.left_parcel_list.clear()
         self.right_parcel_list.clear()
-        results = self.obb_model.predict(source=self.color_data,
-                        conf=0.4,
-                        iou=0.75,
+        results = self.obb_model.predict(source=self.color_data,    # 【TODO】 参数需要测试，可以使用x-anylabeling测试
+                        conf=0.7,
+                        iou=0.5,
                         half=True,
                         agnostic_nms=True,
                         device=0)
@@ -93,7 +93,7 @@ class ProcessPipeline:
         right_list = self.parcels_parallel_process(self.right_parcel_list)
         cost = (time.time() - t0) * 1000
         self.logger.info(f"[性能] 单帧处理耗时: {cost:.1f}ms | 左区:{len(left_list)} 右区:{len(right_list)} 左区机械臂:{self.robot_flag_left} 右区机械臂:{self.robot_flag_right}")
-        return left_list, right_list, self.robot_flag_left, self.robot_flag_right
+        return left_list, right_list, self.robot_flag_left, self.robot_flag_right, self.color_img
 
     def _sort_region(self):
         for id, box in enumerate(self.detect_result.obb):
@@ -106,7 +106,7 @@ class ProcessPipeline:
             parcel.sub_region_id = sub_region.sub_region_id if sub_region else None
             parcel.type = paecel_types[box.cls.item()]
             if base_region and base_region.region_id == 'left_zone':
-                # TODO: 后续修改为不直接使用数字
+                # TODO: 后续修改为不直接使用数字，将这些常数放在vision_utils中
                 parcel.arm_id = 1
                 self.left_parcel_list.append(parcel)
             elif base_region and base_region.region_id == 'right_zone':
@@ -114,10 +114,9 @@ class ProcessPipeline:
                 self.right_parcel_list.append(parcel)
 
     def parcel_process(self, parcel: PackageInfo) -> PackageInfo:
-        # TODO:在PackageInfo设置一个字段表示是否正确处理到结尾，默认为False，处理结束为True
-        # PackageStatus：涉及到这部分的设计与初始化
+        # PackageStatus：表示包裹状态，从是否成功处理到是否可以抓取，状态一直被跟踪
         self.logger.debug(f"包裹[{parcel.package_id}] 基础标识信息填充完成：时间戳={parcel.timestamp}")
-        parcel.status = PackageStatus.UNSOLVE   # 【提示】：包裹默认状态unsolve(未解算)
+        parcel.status = PackageStatus.UNSOLVE   # UNSOLVE：未解算
         box = parcel.obb
         x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
         x1 = max(0, x1)
@@ -176,7 +175,7 @@ class ProcessPipeline:
 
         # TODO: 修改为与子区域法向量计算的安全墙操作
         cos_angle = filter_normals(obb_info['normal'])
-        if cos_angle < 0.707:    # 改为45度
+        if cos_angle < 0.8:    # 改为45度
             parcel.status = PackageStatus.UNGRASPABLE
             parcel.error_msg = "包裹法向量夹角过大"
             return parcel
@@ -190,7 +189,10 @@ class ProcessPipeline:
 
         # 检查包裹信息的封装[TODO]
         # 【TODO】(暂时可忽略，代码优先级低)将数据结构应用在tranform等方法中
-        # 【TODO: 绘图】相应图片状态
+        # 【TODO: 绘图】检查绘图是否需要重构
+        color_img, _ = draw_3d_obb_on_image(self.color_img, obb_info['rect3d'], self.intrinsics, color=(0, 255, 0), label="Grasp OBB")
+        color_img = draw_graspinfo(color_img, obb_info['center_v'], obb_info['u_axis'], obb_info['v_axis'], self.intrinsics)
+        self.color_img = color_img
         parcel.status = PackageStatus.GRASPABLE
         grasp_point_base = transform_point(obb_info['center'], extrinsic)
         stay_point_base = transform_point(obb_info['stay3d'], extrinsic)
@@ -227,13 +229,7 @@ class ProcessPipeline:
                     self.logger.error(f"包裹{parcel.package_id}处理期间异常: {parcel.error_msg}, 异常信息: {e}")    
         return results
 
-        ######################################################
-        color_img, _ = draw_3d_obb_on_image(self.color_img, obb_info['rect3d'], self.intrinsics, color=(0, 255, 0), label="Grasp OBB")
-        color_img = draw_graspinfo(color_img, obb_info['center_v'], obb_info['u_axis'], obb_info['v_axis'], self.intrinsics)
-        center = project(center_3d, self.intrinsics)
-        cv2.circle(color_img, center, 4, (0, 255, 0), -1)
-        self.color_img = color_img
-        parcel.out_path = self.timestamp
+
  
 
 
@@ -255,8 +251,8 @@ class VisionModule:
         # 相机驱动层
         self.camera = CameraDriver(self.SERIAL_NUMBER, frame_queue_size=1, fetch_frame_timeout=5000)  # 持有CameraDriver实例
         # self.camera.__enter__() # 启动相机
-        self.intrinsics = {'fx': 845.8645, 'fy': 849.886841, 'cx': 712.9507, 'cy': 546.7291}    # [NOTE]: 调试语句
         self.intrinsics = self.camera.get_intrinsics()
+        self.intrinsics = {'fx': 845.8645, 'fy': 849.886841, 'cx': 712.9507, 'cy': 546.7291}    # [NOTE]: 调试语句
 
         # 视觉模块结果队列设置
         self.result_queue = queue.Queue(maxsize=1)  # maxsize=1 时刻保持最新结果
@@ -273,17 +269,18 @@ class VisionModule:
             right_status = self.region_manager.get_region_status('right_zone')
             show_color_image(frame.color_data)
             self.process_pipeline.put_frame(frame)
-            left_list, right_list, robot_flag_left, robot_flag_right = self.process_pipeline.run()
+            left_list, right_list, robot_flag_left, robot_flag_right, color_img = self.process_pipeline.run()
             # 封装为VisionResult格式，与决策模块统一规范
             # [TODO]封装cmd与has_robot
-            left_result = VisionResult(region_id='left_zone', package_list=left_list, has_robot=robot_flag_left, cmd=left_status)
-            right_result = VisionResult(region_id='right_zone', package_list=right_list, has_robot=robot_flag_right, cmd=right_status)
+            left_result = VisionResult(region_id='left_zone', parcel_list=left_list, has_robot=robot_flag_left, cmd=left_status)
+            right_result = VisionResult(region_id='right_zone', parcel_list=right_list, has_robot=robot_flag_right, cmd=right_status)
             self._put_result_to_queue((left_result, right_result))
             # 前端传图
             # =========================================================
             # 调试部分
             # =========================================================
-            print_debug_report(self.logger, left_result, right_result)
+            print_debug_report(self.logger, left_list, right_list)
+            show_color_image(color_img)
             # =========================================================
 
 

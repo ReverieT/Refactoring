@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 # 导入你的模块
 from vision import VisionModule
-from file_camera_driver import FileCameraDriver
+from code4test.file_camera_driver import FileCameraDriver
 # 导入枚举，用于Mock状态
 from vision_module.region_manager import RegionStatus
 

@@ -1,12 +1,13 @@
 # 包外部库
 from robot_controller import PostalDas
-from version_control import VisionModule
+from vision import VisionModule
 from utils import constant
 # 包内部库
 from decision_module.decision_log import decision_logger
 # from decision_module.config import decision_config as C
 # from vision_module.vision_process.image_process import compute_depth_diff, mask_left
 from vision_module.data_structures import VisionResult, PackageInfo
+from vision_module.region_manager import RegionStatus
 
 # 标准库与第三方库
 import time
@@ -113,14 +114,17 @@ class DecisionModule:
                 raise f"make_decision 出现错误: {e}\n{tb}"
 
     def _vision_result_infer(self, result: VisionResult):
+        # cmd = result.cmd      # [NOTE] 注释代码
         if result.region_id == 'left_zone':
             set_zone_state_func = self.set_left_zone_state
             catch_queue = self.left_catch_queue
+            cmd = self.vision_module.get_region_status('left_zone')
         elif result.region_id == 'right_zone':
             set_zone_state_func = self.set_right_zone_state
             catch_queue = self.right_catch_queue
+            cmd = self.vision_module.get_region_status('right_zone')
         counter, best_parcel = self._resolve_parcel_list(result.parcel_list)
-        if result.cmd == 'sort':
+        if cmd == RegionStatus.SORT:
             # [sort -> sort] or [sort -> up] or [sort -> remove]
             # 根据parcel.status对parcel_list进行分类
             if counter['graspable'] > 0:
@@ -149,7 +153,7 @@ class DecisionModule:
             
             函数外(make_decision中)设置：如果左边设置为UP，右边直接设置为UP
             """
-        elif result.cmd == 'up':
+        elif cmd == RegionStatus.UP:
             # [up -> sort] or [up keeps]
             # [TODO]这里需要修改为视觉部分满足上料需求，暂时修改为如果有包裹可抓取，就设置为SORT
             if best_parcel is not None:
@@ -165,7 +169,7 @@ class DecisionModule:
             如果上料未完成 -> 保持上料
                 set_zone_state_func(ZoneIntent.UP)  # 应当不用设置，依然为上料状态
             """
-        elif result.cmd == 'remove':
+        elif cmd == RegionStatus.REMOVE:
             # [remove -> up] or [remove keeps]
             if self.remove_flag is False: # 剔除结束
                 set_zone_state_func(ZoneIntent.UP)
@@ -213,9 +217,13 @@ class DecisionModule:
     def set_left_zone_state(self, state: ZoneIntent):
         self.logger.info(f"左区状态变更：{self.left_zone_state} → {state}")
         self.left_zone_state = state
+        region_status = self._intent2region_status(state)
+        self.vision_module.set_region_status('left_zone', region_status)
     def set_right_zone_state(self, state: ZoneIntent):
         self.logger.info(f"右区状态变更：{self.right_zone_state} → {state}")
         self.right_zone_state = state
+        region_status = self._intent2region_status(state)
+        self.vision_module.set_region_status('right_zone', region_status)
     def get_scene_state(self) -> SystemStrategy:
         # TODO: 这里可能出现第五种状态：L_REMOVE_R_SORT
         if self.left_zone_state == ZoneIntent.SORT and self.right_zone_state == ZoneIntent.SORT:
@@ -333,12 +341,27 @@ class DecisionModule:
             self.logger.critical("恢复正常状态成功，决策模块完成恢复")
     # 2. 向前端传递状态的接口
 
-    def _clear_queue(self, q: Queue):
+    # ---------------------------------------------------------
+    # 辅助函数
+    # 工具函数
+    # ---------------------------------------------------------
+    @staticmethod
+    def _clear_queue(q: Queue):
         while not q.empty():
             try:
                 q.get_nowait()
             except Empty:
                 break
+
+    @staticmethod
+    def _intent2region_status(intent: ZoneIntent) -> RegionStatus:
+        if intent == ZoneIntent.UP:
+            return RegionStatus.UP
+        elif intent == ZoneIntent.SORT:
+            return RegionStatus.SORT
+        elif intent == ZoneIntent.REMOVE:
+            return RegionStatus.REMOVE
+        return RegionStatus.SORT
 
 if __name__ == '__main__':
     vision_module = VisionModule()

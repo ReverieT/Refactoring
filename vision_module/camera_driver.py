@@ -11,7 +11,7 @@ from datetime import datetime
 
 from ctypes import pointer, byref, c_uint
 import logging
-from typing import Optional
+from typing import Dict, Optional
 
 # 配置接入前，暂时使用本文件的日志【TODO: 后续接入日志系统】
 logging.basicConfig(
