@@ -25,5 +25,9 @@ utils/
 Mv3dRgbdImport/
 Mv3dRgbdLog/
 
+# 静态文件
+resources/
+static/
+
 # 未来模块
 future/

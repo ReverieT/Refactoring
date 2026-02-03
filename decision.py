@@ -1,7 +1,7 @@
 # 包外部库
 from robot_controller import PostalDas
 from vision import VisionModule
-from utils import constant
+from decision_module.utils import constant
 # 包内部库
 from decision_module.decision_log import decision_logger
 # from decision_module.config import decision_config as C
@@ -296,13 +296,13 @@ class DecisionModule:
             parcel = self.left_catch_queue.get()
             self.logger.debug(f"向左臂传递包裹，当前队列长度为{self.left_catch_queue.qsize()}")
             self.has_catched_left_list.append(parcel)
-            return stime,time.time(),(constant.VisionInspectionStrategy.NORMAL_OUTPUT, parcel)
+            # return stime,time.time(),(constant.VisionInspectionStrategy.NORMAL_OUTPUT, parcel)
         elif robot_id == constant.RIGHT_ROBOT_ARM: # 右臂 2
             self.logger.debug(f"右臂询问包裹，当前队列长度为{self.right_catch_queue.qsize()}")
             parcel = self.right_catch_queue.get()
             self.logger.debug(f"向右臂传递包裹，当前队列长度为{self.right_catch_queue.qsize()}")
             self.has_catched_right_list.append(parcel)
-            return stime,time.time(),(constant.VisionInspectionStrategy.NORMAL_OUTPUT, parcel)
+            # return stime,time.time(),(constant.VisionInspectionStrategy.NORMAL_OUTPUT, parcel)
 
     # ---------------------------------------------------------
     # 前端交互
