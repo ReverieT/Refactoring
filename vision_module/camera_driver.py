@@ -4,6 +4,7 @@ from Mv3dRgbdImport.Mv3dRgbdApi import *
 from Mv3dRgbdImport.Mv3dRgbdDefine import CoordinateType_RGB, DeviceType_Ethernet
 
 import numpy as np
+import copy
 import cv2
 import queue
 import threading
@@ -134,7 +135,6 @@ class CameraDriver:
         """相机采集核心逻辑（线程执行函数）"""
         logger.info(f"相机 {self.serial_number} 采集线程已启动")
         while not self.stop_event.is_set() and self.is_streaming:
-            # 初始化帧数据结构（保留stFrameData写法，符合你的要求）
             stFrameData = MV3D_RGBD_FRAME_DATA()
             color_data = None
             depth_data = None
@@ -153,7 +153,7 @@ class CameraDriver:
                     )
 
                     if i == 0:  # 深度图（uint16格式）
-                        depth_data = np.frombuffer(np_array, dtype=np.uint16).reshape(height, width)
+                        depth_data = np.frombuffer(np_array, dtype=np.uint16).reshape(height, width).copy()
                     elif i == 1:  # 彩色图（RGB转BGR，适配cv2）
                         planar = np_array.reshape((3, height, width))
                         color_data = np.transpose(planar, (1, 2, 0))
@@ -172,6 +172,7 @@ class CameraDriver:
                     # 非阻塞放入队列，满时丢弃旧帧（核心优化：保证线程安全+最新帧）
                     self._put_frame_to_queue(image_frame)
                 else:
+                    print("采集到无效帧")
                     logger.warning(f"相机 {self.serial_number} 采集到无效帧，已丢弃")
 
             except ValueError as e:
@@ -299,6 +300,31 @@ with CameraDriver(serial_number='00DA5939159') as camera:
             # 处理图像
             pass
 """
+if __name__ == "__main__":
+    """
+    调试代码语句
+    使用方式：
+        python -m vision_module.camera_driver
+    """
+    import faulthandler
+    faulthandler.enable()
+
+    import time
+    from vision_module.vision_process import *
+    with CameraDriver(serial_number='00DA5939159') as camera:
+        print(camera.get_intrinsics())
+        time.sleep(500)
+        while True:
+            imageframe = camera.get_latest_frame()
+            color_frame, depth_frame = imageframe.color_data, imageframe.depth_data
+            if color_frame is not None and depth_frame is not None:
+                # 处理图像
+                # print(depth_frame)
+                # show_color_image(color_image=color_frame)
+                # show_depth_image(depth_image=depth_frame)
+                time.sleep(0.1)
+                print("正在打印下一帧")
+                pass
 """
 Note:
     1. 目前驱动是根据轮询机制实现的，实际上也可以根据回调注册机制实现。个人认为二者是等价的。
