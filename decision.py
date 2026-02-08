@@ -1,7 +1,7 @@
 # 包外部库
 from robot_controller import PostalDas
-from vision import VisionModule
-from decision_module.utils import constant, VisionInspectionStrategy
+from version_control import VisionModule
+from utils import constant, VisionInspectionStrategy
 # 包内部库
 from decision_module.decision_log import decision_logger
 # from decision_module.config import decision_config as C
@@ -37,16 +37,17 @@ class SystemStrategy(Enum):
 
 class DecisionModule:
 
-    def __init__(self, vision_module: VisionModule, postal_DAS: PostalDas):
+    def __init__(self, vision_module: VisionModule, postal_DAS: PostalDas, vision_emergency_stop=None):
         self.vision_module = vision_module
         self.postal_DAS = postal_DAS
-        self.logger = decision_logger # TODO: [可以需要修改]
+        self.logger = decision_logger
 
         self.left_catch_queue = Queue()
         self.right_catch_queue = Queue()
         self.left_sorted_parcels_list = []
         self.right_sorted_parcels_list = []
 
+        # 已抓取、抓取失败
         # 记录已经被抓取的包裹，上料时清空列表
         self.has_catched_left_list = []
         self.has_catched_right_list = []
@@ -56,6 +57,7 @@ class DecisionModule:
         self._emergency_stop_flag = False # 急停标志（暂停）
         self._emergency_stop_lock = threading.Lock() # 状态锁（保证急停/恢复线程安全）
 
+        # 这里属于意图，之后需要将意图写入至区域管理器
         self.left_zone_state = ZoneIntent.SORT
         self.right_zone_state = ZoneIntent.SORT
 
@@ -66,7 +68,8 @@ class DecisionModule:
 
     # ---------------------------------------------------------
     # Producer: 视觉模块负责生产视觉结果，通过调用get_latest_result()方法获取
-    # ---------------------------------------------------------  
+    # --------------------------------------------------------- 
+    # 示例： 
     # self.vision_module.get_latest_result() 会返回最新的视觉结果
 
     # ---------------------------------------------------------
@@ -78,7 +81,7 @@ class DecisionModule:
                 time.sleep(0.05)    # 防止死循环空转占用CPU
                 continue
             try:
-                vision_result = self.vision_module.get_latest_result()
+                vision_result = self.vision_module.get_lastest_result()
                 left_result, right_result = vision_result
                 self._vision_result_infer(left_result)
                 self._vision_result_infer(right_result)
@@ -95,13 +98,13 @@ class DecisionModule:
                 self._actuator_control()
                 # 从左右两区的状态，推理出全局状态
                 self.get_scene_state()
-                # TODO: 这里接入前端状态显示函数
+                # 【TODO】这里需要向机械臂传递信息
 
 
             except Exception as e:
                 tb = traceback.format_exc()
                 raise f"make_decision 出现错误: {e}\n{tb}"
-
+    # TODO : 需要修改包裹抓取队列的形式
     def _vision_result_infer(self, result: VisionResult):
         # cmd = result.cmd      # [NOTE] 注释代码
         counter, sorted_parcels = self._resolve_parcel_list(result.parcel_list)
@@ -128,21 +131,6 @@ class DecisionModule:
                     set_zone_state_func(ZoneIntent.REMOVE)
                 else:
                     set_zone_state_func(ZoneIntent.UP)
-            """
-            伪代码：
-            如果包裹列表中可抓取的包裹数量>0:
-                排列优先级，将优先级最高的包裹加入catch_queue
-                set_zone_state_func(ZoneIntent.SORT)
-            如果列表中可抓取的包裹数量=0:
-                如果机械臂遮挡：
-                        set_zone_state_func(ZoneIntent.SORT)
-                如果存在不可抓取的包裹:
-                        set_zone_state_func(ZoneIntent.REMOVE)
-                如果不存在不可抓取的包裹:   
-                    set_zone_state_func(ZoneIntent.UP)
-            
-            函数外(make_decision中)设置：如果左边设置为UP，右边直接设置为UP
-            """
         elif cmd == RegionStatus.UP:
             # [up -> sort] or [up keeps]
             # [TODO]这里需要修改为视觉部分满足上料需求，暂时修改为如果有包裹可抓取，就设置为SORT
@@ -181,6 +169,7 @@ class DecisionModule:
         #   Size = parcel.obb_info['long_edge'] * parcel.obb_info['short_edge']
         #   Distance = sqrt(x^2 + y^2) (平面欧氏距离) parcel.grasp_point.x and parcel.grasp_point.y
         # [TODO] 需要判定机械臂基座原点坐标为(0, 0, 0)，距离基座由远到近
+        # TODO: 打分需要修改 1. 左右区权重不同（添加权重参数）， 2. 距离判定
         features = []
         for parcel in graspable_parcels:
             height = parcel.grasp_point.z
@@ -316,8 +305,10 @@ class DecisionModule:
             self.has_catched_right_list.append(parcel)
             return stime,time.time(),(VisionInspectionStrategy.NORMAL_OUTPUT, parcel)
 
+    def robot_feedback(self):
+        pass
     # ---------------------------------------------------------
-    # 前端交互
+    # 前端交互  【TODO】需要添加在前端控制中
     # ---------------------------------------------------------
     # 1. 控制急停与恢复
     def set_emergency_stop(self):
@@ -335,7 +326,8 @@ class DecisionModule:
             self._clear_queue(self.left_catch_queue)
             self._clear_queue(self.right_catch_queue)
 
-            # [TODO] 控制视觉模块相关暂停操作
+            # 控制视觉模块相关暂停操作
+            self.vision_module.camera.stop_camera()
             self.logger.critical("设置急停状态成功，决策模块完成急停")
 
     def recover_from_emergency_stop(self):
@@ -343,7 +335,8 @@ class DecisionModule:
             if not self._emergency_stop_flag:
                 return
             self._emergency_stop_flag = False
-            # [TODO] 控制视觉模块相关恢复状态
+            self.vision_module.camera.start_camera()
+            # 控制视觉模块相关恢复状态
 
             self.left_zone_state = ZoneIntent.SORT
             self.right_zone_state = ZoneIntent.SORT
@@ -374,8 +367,13 @@ class DecisionModule:
         return RegionStatus.SORT
 
 if __name__ == '__main__':
-    vision_module = VisionModule()
-    postal_DAS = PostalDAS()
+    def frame_callback(frame_base64):
+        pass
+
+    def log_callback(info):
+        pass
+    vision_module = VisionModule(log_callback, frame_callback)
+    postal_DAS = PostalDas()
     decision_module = DecisionModule(vision_module, postal_DAS)
 
     decision_thread = threading.Thread(target=decision_module.make_decision, daemon=True)
@@ -420,3 +418,30 @@ if __name__ == '__main__':
 # 一、 视觉模块的线程 1. 视觉主线程 2. 处理线程池 3. 相机驱动线程
 #   视觉主线程负责调用处理线程池，数据驱动，会因相机驱动线程的数据而阻塞
 #   因此视觉这边的急停设置只需要设置相机驱动线程的急停即可（TODO: 设置相机驱动线程的阻塞与恢复）
+
+
+
+
+
+"""
+测试几种方式
+方式一：
+    视觉线程阻塞式，即视觉result queue没有被读取时，一直阻塞，直到它被读取之后再进行生产
+    个人感觉没有什么问题
+方式二：
+    视觉线程不停生产，每次丢弃旧的帧，实质上决策模块只取最新帧，这样可能造成浪费，但可以保证每次都使用的是最新信息
+    目前的代码应该是第二种
+
+
+这里决策模块也需要类似的权衡
+像是食物链 机械臂 -> 决策模块 -> 视觉模块 -> 相机驱动
+这里决策模块和机械臂的交互也是如此：
+决策模块需要产出一个待抓取包裹的列表，或者说决策模块是机械臂的抓取指引
+他需要的职能应当是保证机械臂每次询问包裹时总能及时地拿到包裹，这样效率最高，剩下的就保证机械臂拿到的这些包裹尽量没有问题
+所以任务就是当分拣状态时，每次都需要让可抓列表保持两个包裹
+
+因为还需要上料，决策模块并不纯粹时生产端，所以不能完全按照机械臂的需要阻塞
+因此需要不断获取视觉模块最新result，不断解析更新当前场景信息
+可能需要修改的部分就是如何更新好左右两个队列，我是倾向于获取当前决策的最好列表之后再专门进行更新的
+目前直接选择最佳包裹，实际上有一点直白了
+"""

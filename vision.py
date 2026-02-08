@@ -4,6 +4,7 @@ import open3d as o3d
 from ultralytics import YOLO
 
 import copy
+import base64
 import time
 import queue
 from ctypes import *
@@ -243,14 +244,15 @@ class VisionModule:
         self.frame_callback = frame_callback
         # 常量配置
         self.SERIAL_NUMBER = '00DA5939159'
+        self.jpeg_qulity = [int(cv2.IMWRITE_JPEG_QUALITY), 50]
         self.logger = Vision_logger
 
         # 区域管理器
-        self.region_config_path: str = "./region_config.yaml"   # [TODO: 修改为绝对路径]
+        self.region_config_path: str = "D:/PostalDAS/resources/vision/region_config.yaml"   # [TODO: 修改为绝对路径]
         self.region_manager = RegionManager(config_path=self.region_config_path)
         # 相机驱动层
         self.camera = CameraDriver(self.SERIAL_NUMBER, frame_queue_size=1, fetch_frame_timeout=5000)  # 持有CameraDriver实例
-        # self.camera.__enter__() # 启动相机
+        self.camera.__enter__() # 启动相机
         self.intrinsics = self.camera.get_intrinsics()
         self.intrinsics = {'fx': 845.8645, 'fy': 849.886841, 'cx': 712.9507, 'cy': 546.7291}    # [NOTE]: 调试语句
 
@@ -275,12 +277,31 @@ class VisionModule:
             left_result = VisionResult(region_id='left_zone', parcel_list=left_list, has_robot=robot_flag_left, cmd=left_status)
             right_result = VisionResult(region_id='right_zone', parcel_list=right_list, has_robot=robot_flag_right, cmd=right_status)
             self._put_result_to_queue((left_result, right_result))
+            # =========================================================
             # 前端传图
+            # =========================================================
+            success, buffer = cv2.imencode('.jpg', color_img, self.jpeg_qulity)
+            if success:
+                b64_data = base64.b64encode(buffer)     # .encode('utf-8')
+                full_data_uri = f"data:image/jpeg;base64,{b64_data}"
+                self.frame_callback(full_data_uri)
+            else:
+                self.logger.warning("前端传图跳过一帧：JPEG编码失败")
+            # =========================================================
+            # 上报视觉状态  【TODO】：依然需要对接调整，或者把视觉状态反馈放在决策模块，每一次决策之后
+            # =========================================================
+            status_dict = {
+                'log_level': 'info',
+                'event_type': 'status',
+                'log_source': 'vision',
+                'log_status': f'Left:{left_status}, Right:{right_status}',     #【TODO】校验是否正确
+            }
+            self.log_callback(status_dict)
             # =========================================================
             # 调试部分
             # =========================================================
-            print_debug_report(self.logger, left_list, right_list)
-            show_color_image(color_img)
+            # print_debug_report(self.logger, left_list, right_list)
+            # show_color_image(color_img)
             # =========================================================
 
 
@@ -288,8 +309,7 @@ class VisionModule:
             
             # 4.负责处理结果的流程：与决策模块沟通结果
             # 决策模块也需要添加一个任务队列，也在主循环中阻塞处理
-            # 传图模块
-            # [TODO]
+            
     def _put_result_to_queue(self, result): #这样简单处理一下就不阻塞了
         if self.result_queue.full():
             self.result_queue.get(block=False)  # 弹出最早的结果，腾出空间
@@ -300,18 +320,7 @@ class VisionModule:
         return self.result_queue.get(block=True, timeout=None)  # 阻塞等待最新结果，无超时时间设置（一直等待）
 
 
-if __name__ == "__main__":
-    def frame_callback(frame_base64):
-        pass
 
-    def log_callback(info):
-        pass
-
-    cv_module = VisionModule(log_callback, frame_callback)
-    cv_module.main_loop()
-    # # 对于主线程
-    # cv_thread = threading.Thread(target=cv_module.main_loop)
-    # cv_thread.start()
 
 
 
@@ -349,7 +358,9 @@ VisionModule
 通过特定的数据结果完成与决策模块的信息传递
 """
 
-# 放在 vision.py 文件的合适位置，或者作为 VisionModule 的成员函数
+"""
+测试部分
+"""
 def print_debug_report(logger, left_parcels: list, right_parcels: list):
     """
     打印本帧视觉处理的详细调试报告
@@ -399,3 +410,22 @@ def _log_single_parcel(logger, p):
     else:
         # 【不可抓】：打印 错误原因
         logger.warning(f"   ❌ [NG] ID:{pid} | {ptype:<15} | 原因: {p.error_msg}")
+
+if __name__ == "__main__":
+    def frame_callback(frame_base64):
+        pass
+
+    def log_callback(info):
+        pass
+
+    cv_module = VisionModule(log_callback, frame_callback)
+    cv_module.main_loop()
+    # # 对于主线程
+    # cv_thread = threading.Thread(target=cv_module.main_loop)
+    # cv_thread.start()
+
+"""
+TODOList:
+1. 安全墙修改
+2. 删除区域管理器过于复杂的操作，保留必要子区域即可，安全墙可以替代大部分防撞子区域
+"""

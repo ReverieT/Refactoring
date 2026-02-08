@@ -5,12 +5,12 @@ base_regions:
   - 1024
   name: 左区（移栽机）
   polygon_vertices:
-  - - 100
-    - 140
-  - - 726
-    - 145
-  - - 705
-    - 1025
+  - - 101
+    - 218
+  - - 589
+    - 215
+  - - 579
+    - 1022
   - - 95
     - 1023
   region_id: left_zone
@@ -20,86 +20,86 @@ base_regions:
     name: left_area_top
     polygon_vertices:
     - - 157
-      - 143
-    - - 727
-      - 146
-    - - 726
-      - 236
+      - 216
+    - - 588
+      - 215
+    - - 591
+      - 298
     - - 157
-      - 231
+      - 282
     sub_region_id: left_zone_sub_1768234665863
-    type: edge
+    type: custom
   - edge_vector: null
     layer_index: null
     name: left_area_left
     polygon_vertices:
     - - 101
-      - 140
-    - - 183
-      - 142
+      - 223
+    - - 179
+      - 218
     - - 179
       - 1018
     - - 96
       - 1019
     sub_region_id: left_zone_sub_1768234713870
-    type: edge
+    type: custom
   - edge_vector: null
     layer_index: null
     name: left_area_right
     polygon_vertices:
-    - - 649
-      - 147
-    - - 727
-      - 146
-    - - 705
-      - 1022
-    - - 640
-      - 1020
+    - - 586
+      - 214
+    - - 682
+      - 216
+    - - 678
+      - 1025
+    - - 577
+      - 1017
     sub_region_id: left_zone_sub_1768234760224
-    type: edge
+    type: custom
 - arm_id: right_arm
   calibration_resolution:
   - 1408
   - 1024
   name: 右区（传送带）
   polygon_vertices:
-  - - 723
-    - 144
+  - - 682
+    - 221
   - - 1406
-    - 162
+    - 212
   - - 1406
     - 1023
-  - - 1050
-    - 1020
-  - - 712
-    - 914
+  - - 1221
+    - 1021
+  - - 679
+    - 851
   region_id: right_zone
   sub_regions:
   - edge_vector: null
     layer_index: null
     name: right_area_base
     polygon_vertices:
-    - - 729
-      - 146
-    - - 1404
-      - 161
-    - - 872
-      - 297
-    - - 724
-      - 294
+    - - 678
+      - 220
+    - - 1405
+      - 216
+    - - 1411
+      - 437
+    - - 683
+      - 301
     sub_region_id: right_zone_sub_1768234797744
-    type: near_base
+    type: custom
   - edge_vector: null
     layer_index: null
     name: right_area_under
     polygon_vertices:
-    - - 707
-      - 846
+    - - 681
+      - 768
     - - 1409
       - 1026
-    - - 1052
+    - - 1221
       - 1019
-    - - 710
-      - 915
+    - - 676
+      - 856
     sub_region_id: right_zone_sub_1768234867786
-    type: edge
+    type: custom

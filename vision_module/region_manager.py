@@ -104,7 +104,7 @@ class RegionManager:
         if self.config_path.exists():
             self.load_config()
         else:
-            print(f"警告：未找到配置文件 {self.config_path}，将使用默认配置。")
+            raise f"未找到配置文件 {self.config_path}"
 
     def load_config(self) -> bool:
         """从YAML文件加载区域配置"""
