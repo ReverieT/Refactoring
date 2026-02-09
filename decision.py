@@ -17,7 +17,7 @@ import traceback
 import threading
 from enum import Enum, auto
 from queue import Queue, Empty
-from collections import Counter
+from collections import Counter, deque
 
 class ZoneIntent(Enum):
     SORT   = auto() # 分拣 (有可抓取包裹)
@@ -49,8 +49,8 @@ class DecisionModule:
 
         # 已抓取、抓取失败
         # 记录已经被抓取的包裹，上料时清空列表
-        self.has_catched_left_list = []
-        self.has_catched_right_list = []
+        self.has_catched_left_list = deque(maxlen=10)
+        self.has_catched_right_list = deque(maxlen=10)
 
         # 状态管理：核心扩展（急停+恢复）
         self.current_state = SystemStrategy.INITIALIZING  # 初始状态
@@ -112,12 +112,10 @@ class DecisionModule:
             set_zone_state_func = self.set_left_zone_state
             cmd = self.vision_module.get_region_status('left_zone')
             self.left_sorted_parcels_list = sorted_parcels
-            catch_queue = self.left_catch_queue
         elif result.region_id == 'right_zone':
             set_zone_state_func = self.set_right_zone_state
             cmd = self.vision_module.get_region_status('right_zone')
             self.right_sorted_parcels_list = sorted_parcels
-            catch_queue = self.left_catch_queue
         
         if cmd == RegionStatus.SORT:
             # [sort -> sort] or [sort -> up] or [sort -> remove]
@@ -134,7 +132,8 @@ class DecisionModule:
         elif cmd == RegionStatus.UP:
             # [up -> sort] or [up keeps]
             # [TODO]这里需要修改为视觉部分满足上料需求，暂时修改为如果有包裹可抓取，就设置为SORT
-            if best_parcel is not None:
+            # TODO: 需要把是否存在重复的步骤放在sort中
+            if len(sorted_parcels) > 0:
                 set_zone_state_func(ZoneIntent.SORT)
             else:
                 set_zone_state_func(ZoneIntent.UP)
@@ -152,6 +151,7 @@ class DecisionModule:
             if self.remove_flag is False: # 剔除结束
                 set_zone_state_func(ZoneIntent.UP)
 
+    # 需要重构，设置左右区配置
     def _resolve_parcel_list(self, parcel_list: list[PackageInfo]):
         counter = Counter()
         graspable_parcels = []
@@ -255,6 +255,8 @@ class DecisionModule:
         remove_thread.start()
     def thread_remove_material(self):
         try:
+            self.has_catched_left_list.clear()
+            self.has_catched_right_list.clear()
             self.postal_DAS.remove_material(status=True)
             self.remove_flag = True
             time.sleep(constant.remove_time)    # 配置参数设定的剔除时间
@@ -271,24 +273,38 @@ class DecisionModule:
         if self.left_catch_queue.qsize() >= 2:
             return
         need_num = 2 - self.left_catch_queue.qsize()
+        has_catched_flag = False
         for parcel in sorted_parcels_list:
-            if parcel in self.has_catched_left_list:    # TODO: 此处是一个条件，剔除重复包裹
-                continue
-            self.left_catch_queue.put(parcel)
-            need_num -= 1
-            if need_num <= 0:
-                break
+            for catched_parcel in self.has_catched_left_list:
+                # 判断两个抓取点之间的欧式距离，小于阈值认为是抓同一个包裹
+                dist = np.linalg.norm(parcel.obb_info['center_v'] - catched_parcel.obb_info['center_v'])
+                if dist < 50:   # 5cm
+                    has_catched_flag = True
+                    break
+            if not has_catched_flag:
+                self.left_catch_queue.put(parcel)
+                self.has_catched_left_list.append(parcel)
+                need_num -= 1
+                if need_num <= 0:
+                    break
     def _put_parcels2right_queue(self, sorted_parcels_list: list):
         if self.right_catch_queue.qsize() >= 2:
             return
         need_num = 2 - self.right_catch_queue.qsize()
         for parcel in sorted_parcels_list:
-            if parcel in self.has_catched_right_list:    # TODO: 此处是一个条件，剔除重复包裹
-                continue
-            self.right_catch_queue.put(parcel)
-            need_num -= 1
-            if need_num <= 0:
-                break
+            has_catched_flag = False
+            for catched_parcel in self.has_catched_right_list:
+                # 判断两个抓取点之间的欧式距离，小于阈值认为是抓同一个包裹
+                dist = np.linalg.norm(parcel.obb_info['center_v'] - catched_parcel.obb_info['center_v'])
+                if dist < 50:   # 5cm
+                    has_catched_flag = True
+                    break
+            if not has_catched_flag:
+                self.right_catch_queue.put(parcel)
+                self.has_catched_right_list.append(parcel)
+                need_num -= 1
+                if need_num <= 0:
+                    break
     # 【TODO】 暂时如此
     def vision_inspection(self, robot_id):
         stime=time.time()
@@ -296,13 +312,11 @@ class DecisionModule:
             self.logger.debug(f"左臂询问包裹，当前队列长度为{self.left_catch_queue.qsize()}")
             parcel = self.left_catch_queue.get()
             self.logger.debug(f"向左臂传递包裹，当前队列长度为{self.left_catch_queue.qsize()}")
-            self.has_catched_left_list.append(parcel)
             return stime,time.time(),(VisionInspectionStrategy.NORMAL_OUTPUT, parcel)
         elif robot_id == constant.RIGHT_ROBOT_ARM: # 右臂 2
             self.logger.debug(f"右臂询问包裹，当前队列长度为{self.right_catch_queue.qsize()}")
             parcel = self.right_catch_queue.get()
             self.logger.debug(f"向右臂传递包裹，当前队列长度为{self.right_catch_queue.qsize()}")
-            self.has_catched_right_list.append(parcel)
             return stime,time.time(),(VisionInspectionStrategy.NORMAL_OUTPUT, parcel)
 
     def robot_feedback(self):
